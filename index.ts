@@ -316,7 +316,7 @@ const server = Bun.serve<WSData>({
       }
     },
   },
-  development: { hmr: true, console: true },
+  development: process.env.NODE_ENV !== "production",
 });
 
 console.log(`Server running at http://localhost:${server.port}`);
