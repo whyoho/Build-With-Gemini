@@ -264,7 +264,7 @@ function Chat({
         {messages.map((m) => (
           <div key={m.id} className={`cmsg cmsg--${m.from}`}>
             <span className="cmsg__who">
-              {m.from === "deaf" ? "YOU" : m.from === "agent" ? "◉ AGENT" : "SYS"}
+              {m.from === "deaf" ? (role === "deaf" ? "YOU" : "DEAF") : m.from === "agent" ? "◉ AGENT" : "SYS"}
             </span>
             <p className="cmsg__body">{m.content}</p>
           </div>
@@ -479,7 +479,7 @@ function WaitingScreen({
   myRole: Role | null;
   partnerJoined: boolean;
   partnerRole: Role | null;
-  onSelectRole: (r: Role) => void;
+  onSelectRole: (r: Role | null) => void;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -536,6 +536,7 @@ function WaitingScreen({
               <span className="role-pick__desc">
                 {muteTaken ? "Taken by partner" : "I'll operate the bomb"}
               </span>
+              {muteTaken && <div className="role-pick__badge">PARTNER</div>}
             </button>
             <button
               className={`role-pick ${deafTaken ? "role-pick--taken" : ""}`}
@@ -547,6 +548,7 @@ function WaitingScreen({
               <span className="role-pick__desc">
                 {deafTaken ? "Taken by partner" : "I'll have the instructions"}
               </span>
+              {deafTaken && <div className="role-pick__badge">PARTNER</div>}
             </button>
           </div>
         </div>
@@ -556,6 +558,9 @@ function WaitingScreen({
             {myRole === "mute" ? "🔇 MUTE" : "🔕 DEAF"}
           </div>
           <p className="waiting__selected-hint">Role locked in</p>
+          <button className="btn btn--ghost btn--sm" onClick={() => onSelectRole(null)}>
+            CHANGE ROLE / CANCEL
+          </button>
           <div className="waiting__status">
             {!partnerJoined ? (
               <span className="waiting__pulse">Waiting for your partner to join…</span>
@@ -601,6 +606,7 @@ function App() {
   const [phase, setPhase] = useState<GamePhase>("home");
   const [roomId, setRoomId] = useState("");
   const [myRole, setMyRole] = useState<Role | null>(null);
+  const [mySessionId, setMySessionId] = useState<string>("");
   const [partnerJoined, setPartnerJoined] = useState(false);
   const [partnerRole, setPartnerRole] = useState<Role | null>(null);
   const [bomb, setBomb] = useState<Bomb | null>(null);
@@ -622,6 +628,9 @@ function App() {
 
   const { send } = useGameWS((msg) => {
     switch (msg.type) {
+      case "welcome":
+        setMySessionId(msg.sessionId);
+        break;
       case "room-created":
         setRoomId(msg.roomId);
         setPhase("waiting");
@@ -633,8 +642,17 @@ function App() {
       case "player-joined":
         setPartnerJoined(true);
         break;
-      case "partner-role-selected":
-        setPartnerRole(msg.role);
+      case "room-status":
+        const partner = msg.players.find((p: any) => p.sessionId !== mySessionId);
+        if (partner) {
+          setPartnerRole(partner.role);
+          setPartnerJoined(true);
+        } else {
+          setPartnerRole(null);
+          setPartnerJoined(false);
+        }
+        const me = msg.players.find((p: any) => p.sessionId === mySessionId);
+        if (me) setMyRole(me.role);
         break;
       case "game-started":
         setMyRole(msg.role);

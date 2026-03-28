@@ -1109,3 +1109,37 @@ body {
   opacity: 0.4;
   z-index: 5;
 }
+
+/* ── Role Selection UI Improvements ────────────────────────────────────────── */
+.role-pick {
+  position: relative;
+}
+
+.role-pick__badge {
+  position: absolute;
+  top: -10px;
+  right: -10px;
+  background: var(--blue);
+  color: #fff;
+  font-size: 9px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  letter-spacing: 1px;
+  font-weight: bold;
+  box-shadow: 0 0 10px rgba(51, 153, 255, 0.4);
+  z-index: 20;
+  animation: badge-pop 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+@keyframes badge-pop {
+  from { transform: scale(0); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.btn--sm {
+  padding: 8px 20px;
+  font-size: 11px;
+  width: auto;
+  margin-top: 12px;
+  letter-spacing: 1px;
+}

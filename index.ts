@@ -28,8 +28,7 @@ interface Bomb {
 }
 
 interface Solution {
-  wiresToCut: string[];
-  symbolsToActivate: string[];
+  sequence: Array<{ type: "wire" | "symbol"; id: string }>;
 }
 
 interface Player {
@@ -45,6 +44,7 @@ interface Room {
   bomb: Bomb;
   solution: Solution;
   instructions: string[];
+  currentStepIndex: number;
   timer?: ReturnType<typeof setInterval>;
   chatHistory: Array<{ role: string; parts: Array<{ text: string }> }>;
   geminiLiveWs?: WebSocket;
@@ -86,22 +86,28 @@ function createGame(): { bomb: Bomb; solution: Solution; instructions: string[] 
   }));
 
   const bomb: Bomb = { wires, symbols, timeLeft: 180 };
+
   const wiresToCut = shuffle(wires.map((w) => w.id)).slice(0, 2);
   const symbolsToActivate = shuffle(symbols.map((s) => s.id)).slice(0, 2);
-  const solution: Solution = { wiresToCut, symbolsToActivate };
 
-  const instructionItems: string[] = [
-    ...wiresToCut.map((id) => {
-      const wire = wires.find((w) => w.id === id)!;
-      return `Cut the ${wire.color} wire`;
-    }),
-    ...symbolsToActivate.map((id) => {
-      const sym = symbols.find((s) => s.id === id)!;
-      return `Toggle the ${sym.name} symbol ON`;
-    }),
+  // Interleave wires and symbols for a mixed sequence
+  const combinedActions = [
+    ...wiresToCut.map(id => ({ type: "wire" as const, id })),
+    ...symbolsToActivate.map(id => ({ type: "symbol" as const, id }))
   ];
+  const sequence = shuffle(combinedActions);
 
-  return { bomb, solution, instructions: shuffle(instructionItems) };
+  const instructions = sequence.map((action, i) => {
+    if (action.type === "wire") {
+      const wire = wires.find(w => w.id === action.id)!;
+      return `${i + 1}. Cut the ${wire.color} wire`;
+    } else {
+      const sym = symbols.find(s => s.id === action.id)!;
+      return `${i + 1}. Toggle the ${sym.name} symbol ON`;
+    }
+  });
+
+  return { bomb, solution: { sequence }, instructions };
 }
 
 function broadcastAll(room: Room, data: object) {
@@ -117,11 +123,7 @@ function broadcast(room: Room, data: object, excludeId: string) {
 }
 
 function checkWin(room: Room): boolean {
-  const { bomb, solution } = room;
-  return (
-    solution.wiresToCut.every((id) => bomb.wires.find((w) => w.id === id)?.cut) &&
-    solution.symbolsToActivate.every((id) => bomb.symbols.find((s) => s.id === id)?.active)
-  );
+  return room.currentStepIndex === room.solution.sequence.length;
 }
 
 async function handleGeminiChat(room: Room, userMessage: string): Promise<string> {
@@ -137,6 +139,8 @@ You mediate between two players:
 - MUTE player: can see the bomb and act on it, cannot speak
 
 Your job: receive the DEAF player's instructions and relay them as urgent, precise commands to the MUTE player.
+
+STRICT SEQUENCE: The MUTE player must follow instructions in the EXACT ORDER provided. Emphasize this.
 
 Rules:
 - Keep responses to 1-2 short sentences MAX
@@ -180,6 +184,8 @@ You mediate between two players:
 - DEAF player: has the instruction manual, types to you, cannot hear
 - MUTE player: can see the bomb and act on it, cannot speak. You see their face/motions via webcam.
 
+STRICT SEQUENCE: The MUTE player must follow instructions in the EXACT ORDER provided. Emphasize this.
+
 Your job: receive the DEAF player's instructions and relay them as urgent, precise commands to the MUTE player.
 
 Rules:
@@ -198,6 +204,7 @@ Rules:
       const msg = JSON.parse(event.data as string);
       if (msg.serverContent?.modelTurn?.parts?.[0]?.text) {
         const text = msg.serverContent.modelTurn.parts[0].text;
+        console.log(`[Room ${room.id}] Gemini: ${text}`);
         broadcastAll(room, { type: "chat-message", from: "agent", content: text });
       }
     } catch (err) {
@@ -206,9 +213,21 @@ Rules:
   };
 
   ws.onerror = (err) => console.error(`[Room ${room.id}] Gemini Live error:`, err);
-  ws.onclose = () => console.log(`[Room ${room.id}] Gemini Live session closed`);
+  ws.onclose = () => {
+    console.log(`[Room ${room.id}] Gemini Live session closed`);
+    room.geminiLiveWs = undefined;
+  };
 
   room.geminiLiveWs = ws;
+}
+
+function syncRoom(room: Room) {
+  const status = {
+    type: "room-status",
+    players: [...room.players.values()].map(p => ({ role: p.role, sessionId: p.sessionId })),
+    phase: room.phase
+  };
+  broadcastAll(room, status);
 }
 
 // ── Server ───────────────────────────────────────────────────────────────────
@@ -249,6 +268,7 @@ const server = Bun.serve<WSData>({
             bomb,
             solution,
             instructions,
+            currentStepIndex: 0,
             chatHistory: [],
           };
           room.players.set(sessionId, { ws, role: null, sessionId });
@@ -272,6 +292,7 @@ const server = Bun.serve<WSData>({
           ws.data.roomId = msg.roomId;
           ws.send(JSON.stringify({ type: "room-joined", roomId: msg.roomId }));
           broadcast(room, { type: "player-joined" }, sessionId);
+          syncRoom(room);
           break;
         }
 
@@ -283,16 +304,18 @@ const server = Bun.serve<WSData>({
           const player = room.players.get(sessionId);
           if (!player) return;
 
-          const roleTaken = [...room.players.values()].some(
-            (p) => p.role === msg.role && p.sessionId !== sessionId
-          );
-          if (roleTaken) {
-            ws.send(JSON.stringify({ type: "error", message: "Role already taken by your partner" }));
-            return;
+          if (msg.role !== null) {
+            const roleTaken = [...room.players.values()].some(
+              (p) => p.role === msg.role && p.sessionId !== sessionId
+            );
+            if (roleTaken) {
+              ws.send(JSON.stringify({ type: "error", message: "Role already taken by your partner" }));
+              return;
+            }
           }
 
           player.role = msg.role;
-          broadcast(room, { type: "partner-role-selected", role: msg.role }, sessionId);
+          syncRoom(room);
 
           const allReady =
             room.players.size === 2 &&
@@ -300,7 +323,8 @@ const server = Bun.serve<WSData>({
 
           if (allReady) {
             room.phase = "playing";
-            initGeminiLive(room); // Initialize Live API session
+            initGeminiLive(room);
+            broadcastAll(room, { type: "chat-message", from: "system", content: "Initializing Blind Agent..." });
             for (const p of room.players.values()) {
               p.ws.send(
                 JSON.stringify({
@@ -330,8 +354,21 @@ const server = Bun.serve<WSData>({
           if (!room || room.phase !== "playing") return;
           const wire = room.bomb.wires.find((w) => w.id === msg.wireId);
           if (!wire || wire.cut) return;
+
+          // Validate sequence
+          const expected = room.solution.sequence[room.currentStepIndex];
+          if (!expected || expected.type !== "wire" || expected.id !== msg.wireId) {
+            console.log(`[Room ${room.id}] Wrong wire or sequence! Expected: ${JSON.stringify(expected)}, Got: wire ${msg.wireId}`);
+            clearInterval(room.timer);
+            room.phase = "failed";
+            broadcastAll(room, { type: "game-over", won: false });
+            return;
+          }
+
           wire.cut = true;
+          room.currentStepIndex++;
           broadcastAll(room, { type: "wire-cut", wireId: msg.wireId });
+          
           if (checkWin(room)) {
             clearInterval(room.timer);
             room.phase = "success";
@@ -345,12 +382,37 @@ const server = Bun.serve<WSData>({
           if (!room || room.phase !== "playing") return;
           const symbol = room.bomb.symbols.find((s) => s.id === msg.symbolId);
           if (!symbol) return;
-          symbol.active = !symbol.active;
+
+          // Validate sequence
+          const wasActive = symbol.active;
+          const expected = room.solution.sequence[room.currentStepIndex];
+
+          if (!wasActive) {
+            // Turning ON
+            if (!expected || expected.type !== "symbol" || expected.id !== msg.symbolId) {
+              console.log(`[Room ${room.id}] Wrong symbol or sequence! Expected: ${JSON.stringify(expected)}, Got: symbol ${msg.symbolId}`);
+              clearInterval(room.timer);
+              room.phase = "failed";
+              broadcastAll(room, { type: "game-over", won: false });
+              return;
+            }
+            symbol.active = true;
+            room.currentStepIndex++;
+          } else {
+            // Turning OFF is always an error per user rules
+            console.log(`[Room ${room.id}] Symbol deactivated! BOOM.`);
+            clearInterval(room.timer);
+            room.phase = "failed";
+            broadcastAll(room, { type: "game-over", won: false });
+            return;
+          }
+
           broadcastAll(room, {
             type: "symbol-toggled",
             symbolId: msg.symbolId,
             active: symbol.active,
           });
+
           if (checkWin(room)) {
             clearInterval(room.timer);
             room.phase = "success";
@@ -363,7 +425,8 @@ const server = Bun.serve<WSData>({
         case "chat": {
           const room = rooms.get(ws.data.roomId!);
           if (!room || room.phase !== "playing") return;
-          broadcastAll(room, { type: "chat-message", from: "deaf", content: msg.content });
+
+          ws.send(JSON.stringify({ type: "chat-message", from: "deaf", content: msg.content }));
           
           if (room.geminiLiveWs && room.geminiLiveWs.readyState === WebSocket.OPEN) {
             room.geminiLiveWs.send(JSON.stringify({
@@ -384,16 +447,12 @@ const server = Bun.serve<WSData>({
         case "webcam-frame": {
           const room = rooms.get(ws.data.roomId!);
           if (!room || room.phase !== "playing") return;
-
-          // Broadcast to the other player (Deaf player) so they can see the webcam
           broadcast(room, { type: "webcam-frame", frame: msg.frame }, sessionId);
-
-          // Forward to Gemini Live API
           if (room.geminiLiveWs && room.geminiLiveWs.readyState === WebSocket.OPEN) {
             room.geminiLiveWs.send(JSON.stringify({
               realtime_input: {
                 media_chunks: [{
-                  data: msg.frame, // Base64 JPEG
+                  data: msg.frame,
                   mime_type: "image/jpeg"
                 }]
               }
