@@ -1577,3 +1577,23 @@ body {
   text-transform: uppercase;
   pointer-events: none;
 }
+
+
+.chat__mic {
+  width: 80px;
+  border: none;
+  background: #ff234f;
+  color: white;
+  font-size: 24px;
+  cursor: pointer;
+  transition: 0.2s;
+}
+
+.chat__mic:hover {
+  filter: brightness(1.1);
+}
+
+.chat__mic--active {
+  background: #00d084;
+  color: black;
+}
