@@ -277,93 +277,253 @@ function WebcamDisplay({ frame }: { frame: string | null }) {
   );
 }
 
-// ── Bomb view (mute player) ───────────────────────────────────────────────────
-function BombView({
+// ── 3D Bomb Components ──────────────────────────────────────────────────────
+function ScrewModel({ screw, onUnscrew }: { screw: Screw; onUnscrew: () => void }) {
+  const meshRef = useRef<THREE.Mesh>(null);
+  const [hovered, setHover] = useState(false);
+  const [holding, setHolding] = useState(false);
+  const holdProgress = useRef(0);
+
+  useFrame((state, delta) => {
+    if (meshRef.current && !screw.removed) {
+      if (holding) {
+        meshRef.current.rotation.y += 15 * delta;
+        holdProgress.current += delta;
+        meshRef.current.position.z = holdProgress.current * 0.08;
+        if (holdProgress.current > 1.0) {
+          setHolding(false);
+          onUnscrew();
+        }
+      } else {
+        holdProgress.current = Math.max(0, holdProgress.current - delta * 2);
+        meshRef.current.position.z = holdProgress.current * 0.08;
+        meshRef.current.rotation.y += hovered ? 0.05 : 0;
+      }
+    }
+  });
+
+  if (screw.removed) return null;
+
+  return (
+    <group
+      onPointerOver={() => setHover(true)}
+      onPointerOut={() => {
+        setHover(false);
+        // Only stop holding if pointer leaves but NOT if it's captured
+      }}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        (e.target as any).setPointerCapture(e.pointerId);
+        setHolding(true);
+      }}
+      onPointerUp={(e) => {
+        e.stopPropagation();
+        (e.target as any).releasePointerCapture(e.pointerId);
+        setHolding(false);
+      }}
+    >
+      {/* Invisible larger hitbox for easier interaction */}
+      <mesh visible={false} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[0.12, 0.12, 0.1, 16]} />
+      </mesh>
+
+      <mesh ref={meshRef} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[0.04, 0.04, 0.04, 16]} />
+        <meshStandardMaterial color={holding ? "#fff" : hovered ? "gold" : "#888"} roughness={0.1} metalness={1} />
+        {/* Slot for screw */}
+        <mesh position={[0, 0.021, 0]}>
+          <boxGeometry args={[0.06, 0.005, 0.005]} />
+          <meshStandardMaterial color="#222" />
+        </mesh>
+      </mesh>
+
+      {hovered && (
+        <Text position={[0, 0.08, 0.02]} fontSize={0.03} color={holding ? "#00e87a" : "white"} outlineWidth={0.003} outlineColor="black" anchorY="bottom">
+          {holding ? `UNSCREWING... ${Math.floor(holdProgress.current * 100)}%` : "HOLD TO UNSCREW"}
+        </Text>
+      )}
+    </group>
+  );
+}
+
+function CompartmentModel({
+  comp,
+  wires,
+  symbols,
+  onCutWire,
+  onToggleSymbol,
+  onUnscrewScrew,
+}: {
+  comp: Compartment;
+  wires: Wire[];
+  symbols: BombSymbol[];
+  onCutWire: (id: string) => void;
+  onToggleSymbol: (id: string) => void;
+  onUnscrewScrew: (id: string) => void;
+}) {
+  const [zoom, setZoom] = useState(false);
+
+  return (
+    <group position={comp.id === "left-panel" ? [-0.4, 0, -0.2] : [0.4, 0, -0.2]} rotation={[0, Math.PI, 0]}>
+      {/* The Panel/Hatch */}
+      {!comp.isOpen && (
+        <mesh onClick={() => setZoom(!zoom)}>
+          <boxGeometry args={[0.5, 0.8, 0.05]} />
+          <meshStandardMaterial color="#222" metalness={0.8} roughness={0.2} />
+          
+          {/* Screws */}
+          {comp.screws.map((s, i) => (
+            <group key={s.id} position={[0, i === 0 ? 0.3 : -0.3, 0.025]}>
+              <ScrewModel screw={s} onUnscrew={() => onUnscrewScrew(s.id)} />
+            </group>
+          ))}
+          
+          <Text position={[0, 0.45, 0.03]} fontSize={0.05} color="#aaa" anchorY="bottom">
+            {comp.name}
+          </Text>
+        </mesh>
+      )}
+
+      {/* Internal Contents */}
+      {comp.isOpen && (
+        <group position={[0, 0, -0.05]}>
+          <mesh>
+            <boxGeometry args={[0.6, 0.9, 0.1]} />
+            <meshStandardMaterial color="#111" />
+          </mesh>
+          
+          {comp.contents.map((cid, i) => {
+            const w = wires.find((w) => w.id === cid);
+            const s = symbols.find((s) => s.id === cid);
+            
+            if (w) {
+              return (
+                <mesh
+                  key={w.id}
+                  position={[0, i * 0.2 - 0.3, 0.06]}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (!w.cut) {
+                      playCut();
+                      onCutWire(w.id);
+                    }
+                  }}
+                >
+                  <boxGeometry args={[0.4, 0.05, 0.05]} />
+                  <meshStandardMaterial color={w.cut ? "#333" : w.color} />
+                  {w.cut && (
+                     <Text position={[0, 0, 0.05]} fontSize={0.06} color="white">
+                       ✂
+                     </Text>
+                  )}
+                </mesh>
+              );
+            }
+            if (s) {
+              return (
+                <group key={s.id} position={[0, i * 0.2 - 0.3, 0.06]}>
+                  <mesh
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      playToggle();
+                      onToggleSymbol(s.id);
+                    }}
+                  >
+                    <boxGeometry args={[0.2, 0.15, 0.02]} />
+                    <meshStandardMaterial color={s.active ? "#00e87a" : "#222"} metalness={0.5} roughness={0.5} />
+                  </mesh>
+                  <Text position={[0, 0, 0.015]} fontSize={0.08} color={s.active ? "black" : "white"}>
+                    {s.icon}
+                  </Text>
+                </group>
+              );
+            }
+            return null;
+          })}
+        </group>
+      )}
+    </group>
+  );
+}
+
+function Bomb3D({
   bomb,
-  timeLeft,
   onCutWire,
   onToggleSymbol,
   onUnscrewScrew,
 }: {
   bomb: Bomb;
-  timeLeft: number;
   onCutWire: (id: string) => void;
   onToggleSymbol: (id: string) => void;
   onUnscrewScrew: (id: string) => void;
 }) {
-  const [rotX, setRotX] = useState(-12);
-  const [rotY, setRotY] = useState(18);
-  const isDragging = useRef(false);
-  const lastPos = useRef({ x: 0, y: 0 });
-
-  const startDrag = (x: number, y: number) => {
-    isDragging.current = true;
-    lastPos.current = { x, y };
-  };
-
-  const moveDrag = (x: number, y: number) => {
-    if (!isDragging.current) return;
-    const dx = x - lastPos.current.x;
-    const dy = y - lastPos.current.y;
-    setRotY((prev) => prev + dx * 0.5);
-    setRotX((prev) => Math.max(-50, Math.min(50, prev - dy * 0.5)));
-    lastPos.current = { x, y };
-  };
-
-  const stopDrag = () => { isDragging.current = false; };
-
-  const m = Math.floor(timeLeft / 60);
-  const s = timeLeft % 60;
-  const timeStr = `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-  const urgent = timeLeft <= 30;
-
   return (
-    <div className="bomb">
-      <div className="bomb__header">
-        <div className="bomb__led" />
-        <span>EXPLOSIVE DEVICE — HANDLE WITH CARE</span>
-        <div className="bomb__led" />
-      </div>
+    <div className="bomb-canvas-container">
+      <Canvas shadows camera={{ position: [0, 0, 2.5], fov: 50 }}>
+        <color attach="background" args={["#080810"]} />
+        <ambientLight intensity={0.5} />
+        <pointLight position={[10, 10, 10]} intensity={1} castShadow />
+        <pointLight position={[-10, 10, -10]} intensity={1} />
+        <spotLight position={[-10, 10, 10]} angle={0.15} penumbra={1} />
+        
+        <PresentationControls
+          global
+          snap={false}
+          rotation={[0, 0.3, 0]}
+          polar={[-Math.PI / 3, Math.PI / 3]}
+          azimuth={[-Math.PI * 1.5, Math.PI * 1.5]}
+        >
+          <Float speed={1.5} rotationIntensity={0.5} floatIntensity={0.5}>
+            <group>
+              {/* Main Body */}
+              <mesh castShadow receiveShadow>
+                <boxGeometry args={[1.5, 1, 0.4]} />
+                <meshStandardMaterial color="#333" metalness={0.5} roughness={0.5} />
+              </mesh>
 
-      <div className="bomb__section">
-        <h3 className="bomb__section-title">WIRES — click to cut</h3>
-        <div className="bomb__wires">
-          {bomb.wires.map((wire) => (
-            <button
-              key={wire.id}
-              className={`wire wire--${wire.color} ${wire.cut ? "wire--cut" : ""}`}
-              onClick={() => !wire.cut && onCutWire(wire.id)}
-              disabled={wire.cut}
-            >
-              <span className="wire__dot" />
-              <div className="wire__track">
-                <div className="wire__line" />
-                {wire.cut && <div className="wire__snip">✂</div>}
-              </div>
-              <span className="wire__label">{wire.color}</span>
-            </button>
-          ))}
-        </div>
-      </div>
+              {/* Central Timer Display */}
+              <mesh position={[0, 0, 0.21]}>
+                <boxGeometry args={[0.6, 0.3, 0.02]} />
+                <meshStandardMaterial color="#000" />
+                <Text
+                  position={[0, 0, 0.015]}
+                  fontSize={0.2}
+                  color={bomb.timeLeft <= 30 ? "#ff2244" : "#00e87a"}
+                  anchorX="center"
+                  anchorY="middle"
+                >
+                  {Math.floor(bomb.timeLeft / 60)}:{String(bomb.timeLeft % 60).padStart(2, "0")}
+                </Text>
+              </mesh>
 
-      <div className="bomb__section">
-        <h3 className="bomb__section-title">SYMBOLS — click to toggle</h3>
-        <div className="bomb__symbols">
-          {bomb.symbols.map((sym) => (
-            <button
-              key={sym.id}
-              className={`symbol-btn ${sym.active ? "symbol-btn--active" : ""}`}
-              onClick={() => onToggleSymbol(sym.id)}
-            >
-              <span className="symbol-btn__icon">{sym.icon}</span>
-              <span className="symbol-btn__name">{sym.name}</span>
-              <span className={`symbol-btn__state ${sym.active ? "on" : "off"}`}>
-                {sym.active ? "ON" : "OFF"}
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
+              {/* Decorative Wires */}
+              {[...Array(8)].map((_, i) => (
+                <mesh key={i} position={[(i % 3 - 1) * 0.5, 0.45, (i % 2 - 0.5) * 0.3]}>
+                  <torusGeometry args={[0.1, 0.01, 8, 16]} />
+                  <meshStandardMaterial color={i % 2 === 0 ? "red" : "black"} />
+                </mesh>
+              ))}
+
+              {/* Compartments */}
+              {bomb.compartments.map((comp) => (
+                <CompartmentModel
+                  key={comp.id}
+                  comp={comp}
+                  wires={bomb.wires}
+                  symbols={bomb.symbols}
+                  onCutWire={onCutWire}
+                  onToggleSymbol={onToggleSymbol}
+                  onUnscrewScrew={onUnscrewScrew}
+                />
+              ))}
+            </group>
+          </Float>
+        </PresentationControls>
+
+        <ContactShadows position={[0, -0.8, 0]} opacity={0.4} scale={10} blur={2.5} far={2} />
+        <Environment preset="city" />
+      </Canvas>
+      <div className="canvas-hint">DRAG TO ROTATE • SCROLL TO ZOOM</div>
     </div>
   );
 }
@@ -537,11 +697,22 @@ function MuteView({
   const latestAgentMsg = [...messages].reverse().find(m => m.from === "agent");
 
   return (
-    <div className="game-view game-view--mute" style={{ backgroundImage: "url('/assets/background.png')" }}>
+    <div className="game-view">
+      <header className="game-header">
+        <div className="role-badge role-badge--mute">
+          <span className="role-badge__icon">🔇</span>
+          <div>
+            <div className="role-badge__name">MUTE</div>
+            <div className="role-badge__hint">You see the bomb — follow Agent's orders</div>
+          </div>
+        </div>
+        <Timer timeLeft={timeLeft} />
+      </header>
       <div className="game-body">
         <div className="game-main">
-          <BombView bomb={bomb} onCutWire={onCutWire} onToggleSymbol={onToggleSymbol} />
-          <WebcamCapture onFrame={onWebcamFrame} />
+          <LatestInstruction message={latestAgentMsg} />
+          <Bomb3D bomb={bomb} onCutWire={onCutWire} onToggleSymbol={onToggleSymbol} onUnscrewScrew={onUnscrewScrew} />
+          <WebcamCapture onFrame={(frame) => { if (agentReady) onWebcamFrame(frame); }} />
         </div>
         <Chat messages={messages} onSend={() => {}} role="mute" agentTyping={agentTyping} agentReady={agentReady} />
       </div>
