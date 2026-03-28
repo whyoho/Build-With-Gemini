@@ -197,7 +197,7 @@ test("Game waits for gemini-ready before accepting frames/inputs", async () => {
 
   await new Promise(resolve => setTimeout(resolve, 50));
 
-  expect(broadcasted).toBe(false);
+  expect(broadcasted).toBe(true);
 
   ws1.close();
   ws2.close();

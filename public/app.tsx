@@ -1,6 +1,40 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { createRoot } from "react-dom/client";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import * as THREE from "three";
+import { Float, ContactShadows, PresentationControls, Text, Html, PerspectiveCamera, Environment } from "@react-three/drei";
 import "./styles.css";
+
+// ── Audio Context ─────────────────────────────────────────────────────────────
+let audioCtx: AudioContext | null = null;
+const getAudioCtx = () => {
+  if (!audioCtx) audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+  if (audioCtx.state === "suspended") audioCtx.resume();
+  return audioCtx;
+};
+
+const playTone = (freq: number, type: OscillatorType, duration: number, vol: number = 0.1) => {
+  try {
+    const ctx = getAudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, ctx.currentTime);
+    gain.gain.setValueAtTime(vol, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + duration);
+  } catch (e) {}
+};
+
+const playTick = (urgent: boolean) => playTone(urgent ? 800 : 400, "sine", 0.1, urgent ? 0.2 : 0.05);
+const playCut = () => { playTone(200, "sawtooth", 0.2, 0.2); playTone(800, "square", 0.1, 0.1); };
+const playToggle = () => playTone(600, "sine", 0.15, 0.1);
+const playExplosion = () => { playTone(100, "sawtooth", 2.0, 0.5); playTone(50, "square", 2.0, 0.5); };
+const playWin = () => { playTone(400, "sine", 0.2, 0.1); setTimeout(() => playTone(600, "sine", 0.4, 0.1), 200); };
+const playMsg = () => playTone(800, "sine", 0.05, 0.05);
 
 // ── Types ────────────────────────────────────────────────────────────────────
 type Role = "mute" | "deaf";
@@ -19,9 +53,23 @@ interface BombSymbol {
   active: boolean;
 }
 
+interface Screw {
+  id: string;
+  removed: boolean;
+}
+
+interface Compartment {
+  id: string;
+  name: string;
+  isOpen: boolean;
+  screws: Screw[];
+  contents: string[];
+}
+
 interface Bomb {
   wires: Wire[];
   symbols: BombSymbol[];
+  compartments: Compartment[];
   timeLeft: number;
 }
 
@@ -58,11 +106,94 @@ function useGameWS(onMessage: (msg: Record<string, any>) => void) {
   return { send };
 }
 
+// ── Speech Recognition ────────────────────────────────────────────────────────
+function useSpeechRecognition(onResult: (text: string, isFinal: boolean) => void) {
+  const [isRecording, setIsRecording] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const recognitionRef = useRef<any>(null);
+
+  useEffect(() => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = false; // Stop automatically on pause
+      recognition.interimResults = true;
+      recognition.lang = "en-US";
+
+      recognition.onresult = (event: any) => {
+        let interimTranscript = "";
+        let finalTranscript = "";
+
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            finalTranscript += event.results[i][0].transcript;
+          } else {
+            interimTranscript += event.results[i][0].transcript;
+          }
+        }
+        
+        if (finalTranscript) {
+          onResult(finalTranscript, true);
+        } else if (interimTranscript) {
+          onResult(interimTranscript, false);
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        console.error("Speech recognition error", event.error);
+        setError(`Mic error: ${event.error}`);
+        setIsRecording(false);
+      };
+
+      recognition.onend = () => {
+        setIsRecording(false);
+        onResult("", false);
+      };
+
+      recognitionRef.current = recognition;
+    }
+  }, [onResult]);
+
+  const startRecording = useCallback(async () => {
+    if (recognitionRef.current && !isRecording) {
+      setError(null);
+      try {
+        recognitionRef.current.start();
+        setIsRecording(true);
+      } catch (e: any) {
+        console.error("Speech recognition start error", e);
+        setError(e.message || "Failed to start mic");
+        setIsRecording(false);
+      }
+    }
+  }, [isRecording]);
+
+  const stopRecording = useCallback(() => {
+    if (recognitionRef.current && isRecording) {
+      try {
+        recognitionRef.current.stop();
+        setIsRecording(false);
+      } catch (err) {
+        // ignore
+      }
+    }
+  }, [isRecording]);
+
+  return { isRecording, startRecording, stopRecording, error, supported: !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) };
+}
+
 // ── Timer ────────────────────────────────────────────────────────────────────
 function Timer({ timeLeft }: { timeLeft: number }) {
   const m = Math.floor(timeLeft / 60);
   const s = timeLeft % 60;
   const urgent = timeLeft <= 30;
+
+  useEffect(() => {
+    if (timeLeft > 0 && timeLeft < 180) {
+      playTick(urgent);
+    }
+  }, [timeLeft, urgent]);
+
   return (
     <div className={`timer ${urgent ? "timer--urgent" : ""}`}>
       <span className="timer__display">
@@ -77,6 +208,11 @@ function Timer({ timeLeft }: { timeLeft: number }) {
 function WebcamCapture({ onFrame }: { onFrame: (base64: string) => void }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const onFrameRef = useRef(onFrame);
+
+  useEffect(() => {
+    onFrameRef.current = onFrame;
+  }, [onFrame]);
 
   useEffect(() => {
     let stream: MediaStream | null = null;
@@ -97,7 +233,7 @@ function WebcamCapture({ onFrame }: { onFrame: (base64: string) => void }) {
             if (ctx) {
               ctx.drawImage(videoRef.current, 0, 0, 320, 240);
               const base64 = canvasRef.current.toDataURL("image/jpeg", 0.5);
-              onFrame(base64.split(",")[1]); // Strip prefix
+              onFrameRef.current(base64.split(",")[1] || ""); // Strip prefix
             }
           }
         }, 1000); // 1 FPS for Gemini
@@ -111,7 +247,7 @@ function WebcamCapture({ onFrame }: { onFrame: (base64: string) => void }) {
       stream?.getTracks().forEach((t) => t.stop());
       clearInterval(interval);
     };
-  }, [onFrame]);
+  }, []);
 
   return (
     <div className="webcam-box webcam-box--capture">
@@ -141,76 +277,253 @@ function WebcamDisplay({ frame }: { frame: string | null }) {
   );
 }
 
-// ── Bomb UI (mute player) ───────────────────────────────────────────────────
-function BombUI({
+// ── 3D Bomb Components ──────────────────────────────────────────────────────
+function ScrewModel({ screw, onUnscrew }: { screw: Screw; onUnscrew: () => void }) {
+  const meshRef = useRef<THREE.Mesh>(null);
+  const [hovered, setHover] = useState(false);
+  const [holding, setHolding] = useState(false);
+  const holdProgress = useRef(0);
+
+  useFrame((state, delta) => {
+    if (meshRef.current && !screw.removed) {
+      if (holding) {
+        meshRef.current.rotation.y += 15 * delta;
+        holdProgress.current += delta;
+        meshRef.current.position.z = holdProgress.current * 0.08;
+        if (holdProgress.current > 1.0) {
+          setHolding(false);
+          onUnscrew();
+        }
+      } else {
+        holdProgress.current = Math.max(0, holdProgress.current - delta * 2);
+        meshRef.current.position.z = holdProgress.current * 0.08;
+        meshRef.current.rotation.y += hovered ? 0.05 : 0;
+      }
+    }
+  });
+
+  if (screw.removed) return null;
+
+  return (
+    <group
+      onPointerOver={() => setHover(true)}
+      onPointerOut={() => {
+        setHover(false);
+        // Only stop holding if pointer leaves but NOT if it's captured
+      }}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        (e.target as any).setPointerCapture(e.pointerId);
+        setHolding(true);
+      }}
+      onPointerUp={(e) => {
+        e.stopPropagation();
+        (e.target as any).releasePointerCapture(e.pointerId);
+        setHolding(false);
+      }}
+    >
+      {/* Invisible larger hitbox for easier interaction */}
+      <mesh visible={false} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[0.12, 0.12, 0.1, 16]} />
+      </mesh>
+
+      <mesh ref={meshRef} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[0.04, 0.04, 0.04, 16]} />
+        <meshStandardMaterial color={holding ? "#fff" : hovered ? "gold" : "#888"} roughness={0.1} metalness={1} />
+        {/* Slot for screw */}
+        <mesh position={[0, 0.021, 0]}>
+          <boxGeometry args={[0.06, 0.005, 0.005]} />
+          <meshStandardMaterial color="#222" />
+        </mesh>
+      </mesh>
+
+      {hovered && (
+        <Text position={[0, 0.08, 0.02]} fontSize={0.03} color={holding ? "#00e87a" : "white"} outlineWidth={0.003} outlineColor="black" anchorY="bottom">
+          {holding ? `UNSCREWING... ${Math.floor(holdProgress.current * 100)}%` : "HOLD TO UNSCREW"}
+        </Text>
+      )}
+    </group>
+  );
+}
+
+function CompartmentModel({
+  comp,
+  wires,
+  symbols,
+  onCutWire,
+  onToggleSymbol,
+  onUnscrewScrew,
+}: {
+  comp: Compartment;
+  wires: Wire[];
+  symbols: BombSymbol[];
+  onCutWire: (id: string) => void;
+  onToggleSymbol: (id: string) => void;
+  onUnscrewScrew: (id: string) => void;
+}) {
+  const [zoom, setZoom] = useState(false);
+
+  return (
+    <group position={comp.id === "left-panel" ? [-0.4, 0, -0.2] : [0.4, 0, -0.2]} rotation={[0, Math.PI, 0]}>
+      {/* The Panel/Hatch */}
+      {!comp.isOpen && (
+        <mesh onClick={() => setZoom(!zoom)}>
+          <boxGeometry args={[0.5, 0.8, 0.05]} />
+          <meshStandardMaterial color="#222" metalness={0.8} roughness={0.2} />
+          
+          {/* Screws */}
+          {comp.screws.map((s, i) => (
+            <group key={s.id} position={[0, i === 0 ? 0.3 : -0.3, 0.025]}>
+              <ScrewModel screw={s} onUnscrew={() => onUnscrewScrew(s.id)} />
+            </group>
+          ))}
+          
+          <Text position={[0, 0.45, 0.03]} fontSize={0.05} color="#aaa" anchorY="bottom">
+            {comp.name}
+          </Text>
+        </mesh>
+      )}
+
+      {/* Internal Contents */}
+      {comp.isOpen && (
+        <group position={[0, 0, -0.05]}>
+          <mesh>
+            <boxGeometry args={[0.6, 0.9, 0.1]} />
+            <meshStandardMaterial color="#111" />
+          </mesh>
+          
+          {comp.contents.map((cid, i) => {
+            const w = wires.find((w) => w.id === cid);
+            const s = symbols.find((s) => s.id === cid);
+            
+            if (w) {
+              return (
+                <mesh
+                  key={w.id}
+                  position={[0, i * 0.2 - 0.3, 0.06]}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (!w.cut) {
+                      playCut();
+                      onCutWire(w.id);
+                    }
+                  }}
+                >
+                  <boxGeometry args={[0.4, 0.05, 0.05]} />
+                  <meshStandardMaterial color={w.cut ? "#333" : w.color} />
+                  {w.cut && (
+                     <Text position={[0, 0, 0.05]} fontSize={0.06} color="white">
+                       ✂
+                     </Text>
+                  )}
+                </mesh>
+              );
+            }
+            if (s) {
+              return (
+                <group key={s.id} position={[0, i * 0.2 - 0.3, 0.06]}>
+                  <mesh
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      playToggle();
+                      onToggleSymbol(s.id);
+                    }}
+                  >
+                    <boxGeometry args={[0.2, 0.15, 0.02]} />
+                    <meshStandardMaterial color={s.active ? "#00e87a" : "#222"} metalness={0.5} roughness={0.5} />
+                  </mesh>
+                  <Text position={[0, 0, 0.015]} fontSize={0.08} color={s.active ? "black" : "white"}>
+                    {s.icon}
+                  </Text>
+                </group>
+              );
+            }
+            return null;
+          })}
+        </group>
+      )}
+    </group>
+  );
+}
+
+function Bomb3D({
   bomb,
   onCutWire,
   onToggleSymbol,
+  onUnscrewScrew,
 }: {
   bomb: Bomb;
   onCutWire: (id: string) => void;
   onToggleSymbol: (id: string) => void;
+  onUnscrewScrew: (id: string) => void;
 }) {
   return (
-    <div className="bomb">
-      <div className="bomb__header">
-        <div className="bomb__led bomb__led--blinking" />
-        <span>EXPLOSIVE DEVICE — HANDLE WITH CARE</span>
-        <div className="bomb__led bomb__led--blinking" />
-      </div>
+    <div className="bomb-canvas-container">
+      <Canvas shadows camera={{ position: [0, 0, 2.5], fov: 50 }}>
+        <color attach="background" args={["#080810"]} />
+        <ambientLight intensity={0.5} />
+        <pointLight position={[10, 10, 10]} intensity={1} castShadow />
+        <pointLight position={[-10, 10, -10]} intensity={1} />
+        <spotLight position={[-10, 10, 10]} angle={0.15} penumbra={1} />
+        
+        <PresentationControls
+          global
+          snap={false}
+          rotation={[0, 0.3, 0]}
+          polar={[-Math.PI / 3, Math.PI / 3]}
+          azimuth={[-Math.PI * 1.5, Math.PI * 1.5]}
+        >
+          <Float speed={1.5} rotationIntensity={0.5} floatIntensity={0.5}>
+            <group>
+              {/* Main Body */}
+              <mesh castShadow receiveShadow>
+                <boxGeometry args={[1.5, 1, 0.4]} />
+                <meshStandardMaterial color="#333" metalness={0.5} roughness={0.5} />
+              </mesh>
 
-      <div className="bomb__panel">
-        <div className="bomb__section bomb__section--wires">
-          <div className="bomb__section-header">
-            <h3 className="bomb__section-title">DETONATOR WIRES</h3>
-            <span className="bomb__section-hint">click to sever</span>
-          </div>
-          <div className="bomb__wires">
-            {bomb.wires.map((wire) => (
-              <button
-                key={wire.id}
-                className={`wire wire--${wire.color} ${wire.cut ? "wire--cut" : ""}`}
-                onClick={() => !wire.cut && onCutWire(wire.id)}
-                disabled={wire.cut}
-              >
-                <div className="wire__connector wire__connector--left" />
-                <div className="wire__track">
-                  <div className="wire__line" />
-                  {wire.cut && (
-                    <div className="wire__snip">
-                      <span className="spark">⚡</span>
-                    </div>
-                  )}
-                </div>
-                <div className="wire__connector wire__connector--right" />
-                <span className="wire__label">{wire.color}</span>
-              </button>
-            ))}
-          </div>
-        </div>
+              {/* Central Timer Display */}
+              <mesh position={[0, 0, 0.21]}>
+                <boxGeometry args={[0.6, 0.3, 0.02]} />
+                <meshStandardMaterial color="#000" />
+                <Text
+                  position={[0, 0, 0.015]}
+                  fontSize={0.2}
+                  color={bomb.timeLeft <= 30 ? "#ff2244" : "#00e87a"}
+                  anchorX="center"
+                  anchorY="middle"
+                >
+                  {Math.floor(bomb.timeLeft / 60)}:{String(bomb.timeLeft % 60).padStart(2, "0")}
+                </Text>
+              </mesh>
 
-        <div className="bomb__section bomb__section--symbols">
-          <div className="bomb__section-header">
-            <h3 className="bomb__section-title">CRYPTOGRAPHIC SYMBOLS</h3>
-            <span className="bomb__section-hint">click to toggle</span>
-          </div>
-          <div className="bomb__symbols">
-            {bomb.symbols.map((sym) => (
-              <button
-                key={sym.id}
-                className={`symbol-btn ${sym.active ? "symbol-btn--active" : ""}`}
-                onClick={() => onToggleSymbol(sym.id)}
-              >
-                <div className="symbol-btn__inner">
-                  <span className="symbol-btn__icon">{sym.icon}</span>
-                  <span className="symbol-btn__name">{sym.name}</span>
-                </div>
-                <div className={`symbol-btn__indicator ${sym.active ? "on" : "off"}`} />
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
+              {/* Decorative Wires */}
+              {[...Array(8)].map((_, i) => (
+                <mesh key={i} position={[(i % 3 - 1) * 0.5, 0.45, (i % 2 - 0.5) * 0.3]}>
+                  <torusGeometry args={[0.1, 0.01, 8, 16]} />
+                  <meshStandardMaterial color={i % 2 === 0 ? "red" : "black"} />
+                </mesh>
+              ))}
+
+              {/* Compartments */}
+              {bomb.compartments.map((comp) => (
+                <CompartmentModel
+                  key={comp.id}
+                  comp={comp}
+                  wires={bomb.wires}
+                  symbols={bomb.symbols}
+                  onCutWire={onCutWire}
+                  onToggleSymbol={onToggleSymbol}
+                  onUnscrewScrew={onUnscrewScrew}
+                />
+              ))}
+            </group>
+          </Float>
+        </PresentationControls>
+
+        <ContactShadows position={[0, -0.8, 0]} opacity={0.4} scale={10} blur={2.5} far={2} />
+        <Environment preset="city" />
+      </Canvas>
+      <div className="canvas-hint">DRAG TO ROTATE • SCROLL TO ZOOM</div>
     </div>
   );
 }
@@ -252,10 +565,22 @@ function Chat({
 }) {
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [interimText, setInterimText] = useState("");
+
+  const { isRecording, startRecording, stopRecording, error, supported } = useSpeechRecognition(
+    useCallback((text, isFinal) => {
+      if (isFinal) {
+        setInput((prev) => (prev ? prev + " " + text.trim() : text.trim()));
+        setInterimText("");
+      } else {
+        setInterimText(text.trim());
+      }
+    }, [])
+  );
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, agentTyping]);
+  }, [messages, agentTyping, interimText]);
 
   const submit = () => {
     if (!agentReady) return;
@@ -263,6 +588,7 @@ function Chat({
     if (t) {
       onSend(t);
       setInput("");
+      setInterimText("");
     }
   };
 
@@ -274,7 +600,7 @@ function Chat({
       </div>
 
       <div className="chat__feed">
-        {messages.length === 0 && (
+        {messages.length === 0 && !interimText && (
           <div className="chat__empty">No transmissions yet…</div>
         )}
         {messages.map((m) => (
@@ -285,6 +611,20 @@ function Chat({
             <p className="cmsg__body">{m.content}</p>
           </div>
         ))}
+        {interimText && role === "deaf" && (
+          <div className="cmsg cmsg--deaf">
+            <span className="cmsg__who">YOU (Speaking)</span>
+            <p className="cmsg__body" style={{ fontStyle: "italic", opacity: 0.7 }}>
+              {interimText}
+            </p>
+          </div>
+        )}
+        {error && role === "deaf" && (
+          <div className="cmsg cmsg--system" style={{ color: "var(--red)" }}>
+            <span className="cmsg__who">MIC ERROR</span>
+            <p className="cmsg__body">{error}</p>
+          </div>
+        )}
         {agentTyping && (
           <div className="cmsg cmsg--agent">
             <span className="cmsg__who">◉ AGENT</span>
@@ -299,12 +639,21 @@ function Chat({
       </div>
 
       <div className="chat__input-row">
+        {role === "deaf" && supported && agentReady && (
+          <button
+            className={`chat__mic ${isRecording ? "chat__mic--recording" : ""}`}
+            onClick={isRecording ? stopRecording : startRecording}
+            title={isRecording ? "Stop recording" : "Click to speak"}
+          >
+            🎤
+          </button>
+        )}
         <input
           className="chat__input"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && submit()}
-          placeholder={agentReady ? (role === "deaf" ? "Type instruction to Agent…" : "Read only...") : "Waiting for agent..."}
+          placeholder={agentReady ? (role === "deaf" ? (isRecording ? "Listening..." : "Type or click 🎤 to speak...") : "Read only...") : "Waiting for agent..."}
           disabled={role !== "deaf" || !agentReady}
         />
         {role === "deaf" && <button className="chat__send" onClick={submit} disabled={!agentReady || !input.trim()}>SEND</button>}
@@ -314,6 +663,16 @@ function Chat({
 }
 
 // ── Mute player view ──────────────────────────────────────────────────────────
+function LatestInstruction({ message }: { message?: ChatMessage }) {
+  if (!message) return null;
+  return (
+    <div className="latest-instruction">
+      <div className="latest-instruction__label">AGENT COMMAND</div>
+      <div className="latest-instruction__content">{message.content}</div>
+    </div>
+  );
+}
+
 function MuteView({
   bomb,
   messages,
@@ -322,6 +681,7 @@ function MuteView({
   agentReady,
   onCutWire,
   onToggleSymbol,
+  onUnscrewScrew,
   onWebcamFrame,
 }: {
   bomb: Bomb;
@@ -331,8 +691,11 @@ function MuteView({
   agentReady: boolean;
   onCutWire: (id: string) => void;
   onToggleSymbol: (id: string) => void;
+  onUnscrewScrew: (id: string) => void;
   onWebcamFrame: (frame: string) => void;
 }) {
+  const latestAgentMsg = [...messages].reverse().find(m => m.from === "agent");
+
   return (
     <div className="game-view">
       <header className="game-header">
@@ -347,7 +710,8 @@ function MuteView({
       </header>
       <div className="game-body">
         <div className="game-main">
-          <BombUI bomb={bomb} onCutWire={onCutWire} onToggleSymbol={onToggleSymbol} />
+          <LatestInstruction message={latestAgentMsg} />
+          <Bomb3D bomb={bomb} onCutWire={onCutWire} onToggleSymbol={onToggleSymbol} onUnscrewScrew={onUnscrewScrew} />
           <WebcamCapture onFrame={(frame) => { if (agentReady) onWebcamFrame(frame); }} />
         </div>
         <Chat messages={messages} onSend={() => {}} role="mute" agentTyping={agentTyping} agentReady={agentReady} />
@@ -615,7 +979,173 @@ function Toast({ message }: { message: string }) {
   return <div className="toast">{message}</div>;
 }
 
-// ── Main App ──────────────────────────────────────────────────────────────────
+// ── Mock Veo Generator ────────────────────────────────────────────────────────
+function useMockVeoVideo() {
+  const [video, setVideo] = useState<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1024;
+    canvas.height = 1024;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    let frame = 0;
+    let animationId: number;
+
+    const draw = () => {
+      frame++;
+      
+      // Manila paper background
+      ctx.fillStyle = "#e8dcc5";
+      ctx.fillRect(0, 0, 1024, 1024);
+
+      // Faded grid
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.05)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let i = 0; i < 1024; i += 32) {
+        ctx.moveTo(i, 0); ctx.lineTo(i, 1024);
+        ctx.moveTo(0, i); ctx.lineTo(1024, i);
+      }
+      ctx.stroke();
+
+      // Top Secret Stamp
+      ctx.save();
+      ctx.translate(512, 300);
+      ctx.rotate(-0.1);
+      ctx.fillStyle = "rgba(200, 30, 30, 0.6)";
+      ctx.font = "bold 90px 'Courier New', monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("TOP SECRET", 0, 0);
+      
+      // Stamp box
+      ctx.strokeStyle = "rgba(200, 30, 30, 0.6)";
+      ctx.lineWidth = 8;
+      ctx.strokeRect(-280, -80, 560, 110);
+      ctx.restore();
+
+      // Bomb Schematic Circles
+      ctx.save();
+      ctx.translate(512, 700);
+      ctx.rotate(frame * 0.005);
+      ctx.strokeStyle = "rgba(40, 40, 40, 0.6)";
+      ctx.lineWidth = 3;
+      ctx.setLineDash([15, 10]);
+      ctx.beginPath();
+      ctx.arc(0, 0, 200, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.rotate(-frame * 0.01);
+      ctx.setLineDash([]);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(0, 0, 150, 0, Math.PI * 2);
+      ctx.stroke();
+      
+      // Crosshairs
+      ctx.beginPath();
+      ctx.moveTo(-220, 0); ctx.lineTo(220, 0);
+      ctx.moveTo(0, -220); ctx.lineTo(0, 220);
+      ctx.stroke();
+      ctx.restore();
+
+      // Typewriter text
+      ctx.fillStyle = "rgba(40, 40, 40, 0.8)";
+      ctx.font = "bold 24px 'Courier New', monospace";
+      ctx.textAlign = "left";
+      ctx.fillText("DEFUSAL MANUAL v1.4.2", 80, 120);
+      ctx.fillText("MODULE ID: " + Math.floor(frame / 10 % 99999).toString().padStart(5, '0'), 80, 160);
+      ctx.fillText("WARNING: HANDLE WITH EXTREME CARE", 80, 200);
+      
+      // Animated noise/dirt (simulate worn paper)
+      for (let i = 0; i < 500; i++) {
+        ctx.fillStyle = `rgba(0,0,0,${Math.random() * 0.04})`;
+        ctx.fillRect(Math.random() * 1024, Math.random() * 1024, 3, 3);
+      }
+
+      animationId = requestAnimationFrame(draw);
+    };
+    draw();
+
+    // Type casting needed as TS doesn't know about captureStream on HTMLCanvasElement in some environments
+    const stream = (canvas as any).captureStream(30);
+    const vid = document.createElement("video");
+    vid.srcObject = stream;
+    vid.crossOrigin = "Anonymous";
+    vid.loop = true;
+    vid.muted = true;
+    vid.playsInline = true;
+    vid.play().catch(() => console.log("Video play blocked"));
+    
+    setVideo(vid);
+
+    return () => {
+      cancelAnimationFrame(animationId);
+      vid.pause();
+      vid.srcObject = null;
+    };
+  }, []);
+
+  return video;
+}
+
+// ── Veo 3D Background Components ──────────────────────────────────────────────
+function VeoScreen({ video }: { video: HTMLVideoElement }) {
+  const groupRef = useRef<THREE.Group>(null);
+  const [videoTexture, setVideoTexture] = useState<THREE.VideoTexture | null>(null);
+
+  useEffect(() => {
+    if (video) {
+      const tex = new THREE.VideoTexture(video);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      setVideoTexture(tex);
+    }
+  }, [video]);
+
+  useFrame((state, delta) => {
+    if (groupRef.current) {
+      // Gentle floating animation to give it a 3D presence without being distracting
+      groupRef.current.position.y = Math.sin(state.clock.elapsedTime * 0.5) * 0.3;
+      groupRef.current.position.x = Math.sin(state.clock.elapsedTime * 0.3) * 0.1;
+      groupRef.current.rotation.x = -0.1 + Math.sin(state.clock.elapsedTime * 0.4) * 0.05;
+      groupRef.current.rotation.y = Math.sin(state.clock.elapsedTime * 0.2) * 0.05;
+      groupRef.current.rotation.z = Math.sin(state.clock.elapsedTime * 0.1) * 0.02;
+    }
+  });
+
+  if (!videoTexture) return null;
+
+  return (
+    <group ref={groupRef} position={[0, 0, -4]}>
+      {/* The main document page */}
+      <mesh>
+        <planeGeometry args={[14, 14]} />
+        <meshBasicMaterial map={videoTexture} />
+      </mesh>
+      
+      {/* A second page slightly offset behind it for depth */}
+      <mesh position={[0.2, -0.2, -0.5]} rotation={[0, 0, -0.05]}>
+        <planeGeometry args={[14, 14]} />
+        <meshBasicMaterial color="#d4c5ab" />
+      </mesh>
+    </group>
+  );
+}
+
+function VeoBackground() {
+  const video = useMockVeoVideo();
+  return (
+    <div style={{ position: "fixed", top: 0, left: 0, width: "100%", height: "100%", zIndex: -1, pointerEvents: "none", opacity: 0.15 }}>
+      <Canvas camera={{ position: [0, 0, 5], fov: 60 }}>
+        <ambientLight intensity={1} />
+        {video && <VeoScreen video={video} />}
+      </Canvas>
+    </div>
+  );
+}
+
+// Wrap it under App:
 function App() {
   const [phase, setPhase] = useState<GamePhase>("home");
   const [roomId, setRoomId] = useState("");
@@ -623,7 +1153,7 @@ function App() {
   const [mySessionId, setMySessionId] = useState<string>("");
   const [partnerJoined, setPartnerJoined] = useState(false);
   const [partnerRole, setPartnerRole] = useState<Role | null>(null);
-  const [bomb, setBomb] = useState<any>(null);
+  const [bomb, setBomb] = useState<Bomb | null>(null);
   const [timeLeft, setTimeLeft] = useState(180);
   const [instructions, setInstructions] = useState<string[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -632,8 +1162,6 @@ function App() {
   const [gameWon, setGameWon] = useState(false);
   const [error, setError] = useState("");
   const [partnerFrame, setPartnerFrame] = useState<string | null>(null);
-
-  const socketRef = useRef<WebSocket | null>(null);
 
   const addMsg = (from: ChatMessage["from"], content: string) =>
     setMessages((prev) => [...prev, { id: crypto.randomUUID(), from, content }]);
@@ -686,6 +1214,7 @@ function App() {
         break;
       case "tick":
         setTimeLeft(msg.timeLeft);
+        setBomb((prev) => (prev ? { ...prev, timeLeft: msg.timeLeft } : null));
         break;
       case "gemini-ready":
         setAgentReady(true);
@@ -694,12 +1223,39 @@ function App() {
       case "game-over":
         setGameWon(msg.won);
         setPhase("game-over");
+        if (msg.won) playWin(); else playExplosion();
+        break;
+      case "bomb-updated":
+        setBomb(msg.bomb);
+        break;
+      case "wire-cut":
+        setBomb((prev) => {
+          if (!prev) return prev;
+          const wires = prev.wires.map((w) => w.id === msg.wireId ? { ...w, cut: true } : w);
+          return { ...prev, wires };
+        });
+        break;
+      case "symbol-toggled":
+        setBomb((prev) => {
+          if (!prev) return prev;
+          const symbols = prev.symbols.map((s) => s.id === msg.symbolId ? { ...s, active: msg.active } : s);
+          return { ...prev, symbols };
+        });
+        break;
+      case "chat-message":
+        addMsg(msg.from, msg.content);
+        if (msg.from !== "system") playMsg();
+        break;
+      case "agent-typing":
+        setAgentTyping(msg.typing);
         break;
       case "webcam-frame":
         setPartnerFrame(msg.frame);
         break;
       case "player-disconnected":
-        addMsg("system", "⚠ Your partner disconnected.");
+        addMsg("system", "Your partner disconnected.");
+        setPartnerJoined(false);
+        setPartnerRole(null);
         break;
       case "error":
         showError(msg.message);
@@ -725,21 +1281,11 @@ function App() {
     setPartnerFrame(null);
   };
 
-  useEffect(() => {
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${proto}//${window.location.host}/ws`);
-    ws.onmessage = (e) => {
-      try {
-        onMsgRef.current(JSON.parse(e.data));
-      } catch {}
-    };
-    wsRef.current = ws;
-    return () => ws.close();
-  }, []);
-
   return (
-    <div className="app">
-      {error && <Toast message={error} />}
+    <>
+      <VeoBackground />
+      <div className="app">
+        {error && <Toast message={error} />}
 
       {phase === "home" && (
         <HomeScreen
@@ -770,6 +1316,7 @@ function App() {
           agentReady={agentReady}
           onCutWire={(id) => send({ type: "cut-wire", wireId: id })}
           onToggleSymbol={(id) => send({ type: "toggle-symbol", symbolId: id })}
+          onUnscrewScrew={(id) => send({ type: "unscrew-screw", screwId: id })}
           onWebcamFrame={(frame) => {
             if (agentReady) {
               send({ type: "webcam-frame", frame });
@@ -787,7 +1334,7 @@ function App() {
           agentReady={agentReady}
           onSend={(content) => {
             if (agentReady) {
-              send({ type: "chat", content });
+              send({ type: "chat-message", content });
             }
           }}
           partnerFrame={partnerFrame}
@@ -795,7 +1342,8 @@ function App() {
       )}
 
       {phase === "game-over" && <GameOverScreen won={gameWon} onPlayAgain={reset} />}
-    </div>
+      </div>
+    </>
   );
 }
 
