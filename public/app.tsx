@@ -141,63 +141,165 @@ function WebcamDisplay({ frame }: { frame: string | null }) {
   );
 }
 
-// ── Bomb view (mute player) ───────────────────────────────────────────────────
-function BombView({
+// ── Asset paths (kept as runtime strings so Bun's bundler skips them) ─────────
+const ASSETS = {
+  boxtexture: "/assets/boxtexture.png",
+  timerframe: "/assets/timerframetexture.png",
+  tape: "/assets/tape.png",
+  wirebox: "/assets/wirebox.png",
+  buttons: "/assets/buttontexture.png",
+} as const;
+
+// ── Wire / symbol image maps ──────────────────────────────────────────────────
+const WIRE_IMAGES: Record<string, string> = {
+  blue: "/assets/blue.png",
+  red: "/assets/red.png",
+  green: "/assets/green.png",
+  white: "/assets/white.png",
+};
+
+const SYMBOL_IMAGES: Record<string, { on: string; off: string }> = {
+  alpha: { on: "/assets/alpha-on.png", off: "/assets/alpha-off.png" },
+  pi: { on: "/assets/pi-on.png", off: "/assets/pi-off.png" },
+  lambda: { on: "/assets/lambda-on.png", off: "/assets/lambda-off.png" },
+};
+
+// ── 3D Bomb Box (mute player) ─────────────────────────────────────────────────
+function BombBox({
   bomb,
+  timeLeft,
   onCutWire,
   onToggleSymbol,
 }: {
   bomb: Bomb;
+  timeLeft: number;
   onCutWire: (id: string) => void;
   onToggleSymbol: (id: string) => void;
 }) {
+  const [rotX, setRotX] = useState(-12);
+  const [rotY, setRotY] = useState(18);
+  const isDragging = useRef(false);
+  const lastPos = useRef({ x: 0, y: 0 });
+
+  const startDrag = (x: number, y: number) => {
+    isDragging.current = true;
+    lastPos.current = { x, y };
+  };
+
+  const moveDrag = (x: number, y: number) => {
+    if (!isDragging.current) return;
+    const dx = x - lastPos.current.x;
+    const dy = y - lastPos.current.y;
+    setRotY((prev) => prev + dx * 0.5);
+    setRotX((prev) => Math.max(-50, Math.min(50, prev - dy * 0.5)));
+    lastPos.current = { x, y };
+  };
+
+  const stopDrag = () => { isDragging.current = false; };
+
+  const m = Math.floor(timeLeft / 60);
+  const s = timeLeft % 60;
+  const timeStr = `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  const urgent = timeLeft <= 30;
+
   return (
-    <div className="bomb">
-      <div className="bomb__header">
-        <div className="bomb__led" />
-        <span>EXPLOSIVE DEVICE — HANDLE WITH CARE</span>
-        <div className="bomb__led" />
-      </div>
+    <div
+      className="bomb-scene"
+      onMouseDown={(e) => startDrag(e.clientX, e.clientY)}
+      onMouseMove={(e) => moveDrag(e.clientX, e.clientY)}
+      onMouseUp={stopDrag}
+      onMouseLeave={stopDrag}
+      onTouchStart={(e) => startDrag(e.touches[0].clientX, e.touches[0].clientY)}
+      onTouchMove={(e) => { e.preventDefault(); moveDrag(e.touches[0].clientX, e.touches[0].clientY); }}
+      onTouchEnd={stopDrag}
+    >
+      <div className="bomb-box" style={{ transform: `rotateX(${rotX}deg) rotateY(${rotY}deg)` }}>
 
-      <div className="bomb__section">
-        <h3 className="bomb__section-title">WIRES — click to cut</h3>
-        <div className="bomb__wires">
-          {bomb.wires.map((wire) => (
-            <button
-              key={wire.id}
-              className={`wire wire--${wire.color} ${wire.cut ? "wire--cut" : ""}`}
-              onClick={() => !wire.cut && onCutWire(wire.id)}
-              disabled={wire.cut}
-            >
-              <span className="wire__dot" />
-              <div className="wire__track">
-                <div className="wire__line" />
-                {wire.cut && <div className="wire__snip">✂</div>}
+        {/* ── Front face: defuser UI ── */}
+        <div className="bomb-face bomb-face--front">
+          <div className="bomb-panel" style={{ backgroundImage: `url('${ASSETS.boxtexture}')` }}>
+            <div className="bomb-panel__title">harmless bomb factory™</div>
+
+            <div className="bomb-panel__body">
+              {/* Left: timer + model label */}
+              <div className="bomb-panel__left">
+                <div className="bomb-timer-frame" style={{ backgroundImage: `url('${ASSETS.timerframe}')` }}>
+                  <div className={`bomb-timer-digits${urgent ? " bomb-timer-digits--urgent" : ""}`}>
+                    {timeStr}
+                  </div>
+                </div>
+                <div className="bomb-model-section">
+                  <span className="bomb-model-label-text">model:</span>
+                  <div className="bomb-model-tape" style={{ backgroundImage: `url('${ASSETS.tape}')` }}>glitch-3.2</div>
+                </div>
               </div>
-              <span className="wire__label">{wire.color}</span>
-            </button>
-          ))}
+
+              {/* Right: wires + symbol buttons */}
+              <div className="bomb-panel__right">
+                <div
+                  className="bomb-wire-box"
+                  style={{ backgroundImage: `url('${ASSETS.wirebox}')` }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onTouchStart={(e) => e.stopPropagation()}
+                >
+                  {bomb.wires.map((wire) => (
+                    <div
+                      key={wire.id}
+                      className={`bomb-wire-row${wire.cut ? " bomb-wire-row--cut" : ""}`}
+                      onClick={() => !wire.cut && onCutWire(wire.id)}
+                    >
+                      <img
+                        src={WIRE_IMAGES[wire.color] ?? "/assets/white.png"}
+                        alt={wire.color}
+                        draggable={false}
+                      />
+                    </div>
+                  ))}
+                  <div className="bomb-led" />
+                </div>
+
+                <div
+                  className="bomb-button-box"
+                  style={{ backgroundImage: `url('${ASSETS.buttons}')` }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onTouchStart={(e) => e.stopPropagation()}
+                >
+                  {bomb.symbols.map((sym) => {
+                    const imgs = SYMBOL_IMAGES[sym.name];
+                    return (
+                      <button
+                        key={sym.id}
+                        className="bomb-sym-btn"
+                        onClick={() => onToggleSymbol(sym.id)}
+                      >
+                        {imgs ? (
+                          <img
+                            src={sym.active ? imgs.on : imgs.off}
+                            alt={sym.name}
+                            draggable={false}
+                          />
+                        ) : (
+                          <span>{sym.icon}</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                  <div className="bomb-led" />
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
+
+        {/* ── Other faces: box texture ── */}
+        <div className="bomb-face bomb-face--back" style={{ backgroundImage: `url('${ASSETS.boxtexture}')` }} />
+        <div className="bomb-face bomb-face--left" style={{ backgroundImage: `url('${ASSETS.boxtexture}')` }} />
+        <div className="bomb-face bomb-face--right" style={{ backgroundImage: `url('${ASSETS.boxtexture}')` }} />
+        <div className="bomb-face bomb-face--top" style={{ backgroundImage: `url('${ASSETS.boxtexture}')` }} />
+        <div className="bomb-face bomb-face--bottom" style={{ backgroundImage: `url('${ASSETS.boxtexture}')` }} />
       </div>
 
-      <div className="bomb__section">
-        <h3 className="bomb__section-title">SYMBOLS — click to toggle</h3>
-        <div className="bomb__symbols">
-          {bomb.symbols.map((sym) => (
-            <button
-              key={sym.id}
-              className={`symbol-btn ${sym.active ? "symbol-btn--active" : ""}`}
-              onClick={() => onToggleSymbol(sym.id)}
-            >
-              <span className="symbol-btn__icon">{sym.icon}</span>
-              <span className="symbol-btn__name">{sym.name}</span>
-              <span className={`symbol-btn__state ${sym.active ? "on" : "off"}`}>
-                {sym.active ? "ON" : "OFF"}
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
+      <p className="bomb-scene__hint">drag to rotate</p>
     </div>
   );
 }
@@ -322,20 +424,15 @@ function MuteView({
   onWebcamFrame: (frame: string) => void;
 }) {
   return (
-    <div className="game-view">
-      <header className="game-header">
-        <div className="role-badge role-badge--mute">
-          <span className="role-badge__icon">🔇</span>
-          <div>
-            <div className="role-badge__name">MUTE</div>
-            <div className="role-badge__hint">You see the bomb — follow Agent's orders</div>
-          </div>
-        </div>
-        <Timer timeLeft={timeLeft} />
-      </header>
+    <div className="game-view game-view--mute" style={{ backgroundImage: "url('/assets/background.png')" }}>
       <div className="game-body">
-        <div className="game-main">
-          <BombView bomb={bomb} onCutWire={onCutWire} onToggleSymbol={onToggleSymbol} />
+        <div className="game-main game-main--mute">
+          <BombBox
+            bomb={bomb}
+            timeLeft={timeLeft}
+            onCutWire={onCutWire}
+            onToggleSymbol={onToggleSymbol}
+          />
           <WebcamCapture onFrame={onWebcamFrame} />
         </div>
         <Chat messages={messages} onSend={() => {}} role="mute" agentTyping={agentTyping} />

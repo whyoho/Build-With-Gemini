@@ -69,12 +69,11 @@ function generateRoomId(): string {
 }
 
 function createGame(): { bomb: Bomb; solution: Solution; instructions: string[] } {
-  const wireColors = ["blue", "yellow", "red", "green", "white"];
+  const wireColors = ["blue", "red", "green", "white"];
   const symbolData = [
-    { name: "star", icon: "★" },
-    { name: "circle", icon: "●" },
-    { name: "triangle", icon: "▲" },
-    { name: "diamond", icon: "◆" },
+    { name: "alpha", icon: "α" },
+    { name: "pi", icon: "π" },
+    { name: "lambda", icon: "λ" },
   ];
 
   const wires: Wire[] = wireColors.map((color, i) => ({ id: `wire-${i}`, color, cut: false }));
@@ -234,6 +233,12 @@ function syncRoom(room: Room) {
 const server = Bun.serve<WSData>({
   routes: {
     "/": indexHtml,
+    "/assets/*": async (req: Request) => {
+      const url = new URL(req.url);
+      const file = Bun.file(`./public${decodeURIComponent(url.pathname)}`);
+      if (await file.exists()) return new Response(file);
+      return new Response("Not found", { status: 404 });
+    },
     "/ws": (req: Request, server: ReturnType<typeof Bun.serve>) => {
       const ok = server.upgrade(req, {
         data: { sessionId: crypto.randomUUID(), roomId: null },
