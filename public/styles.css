@@ -1259,3 +1259,321 @@ body {
   from { transform: translateY(-10px); opacity: 0; }
   to { transform: translateY(0); opacity: 1; }
 }
+
+/* ── Mute game view: workbench background ───────────────────────────────────── */
+.game-view--mute {
+  background-size: cover;
+  background-position: center;
+  min-height: 100vh;
+}
+
+.game-view--mute .game-body {
+  background: transparent;
+}
+
+.game-main--mute {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-right: 1px solid rgba(255,255,255,0.08);
+  gap: 12px;
+  padding: 16px;
+}
+
+/* ── 3D Bomb scene ──────────────────────────────────────────────────────────── */
+.bomb-scene {
+  perspective: 1100px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  cursor: grab;
+  touch-action: none;
+}
+
+.bomb-scene:active {
+  cursor: grabbing;
+}
+
+/* Box dimensions: 450 × 300 × 52 (D/2 = 26) */
+.bomb-box {
+  width: 450px;
+  height: 300px;
+  position: relative;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+
+/* ── Faces ── */
+.bomb-face {
+  position: absolute;
+  backface-visibility: hidden;
+}
+
+/* Front & back share the full W×H footprint */
+.bomb-face--front {
+  width: 450px;
+  height: 300px;
+  top: 0;
+  left: 0;
+  transform: translateZ(26px);
+}
+
+.bomb-face--back {
+  width: 450px;
+  height: 300px;
+  top: 0;
+  left: 0;
+  transform: rotateY(180deg) translateZ(26px);
+  background-size: cover;
+  background-position: center;
+}
+
+/* Left & right: D × H = 52 × 300, centred in parent so rotateY+translateZ(W/2) lands correctly */
+.bomb-face--left,
+.bomb-face--right {
+  width: 52px;
+  height: 300px;
+  top: 0;
+  left: 199px; /* (450 - 52) / 2 */
+  background-size: cover;
+  background-position: center;
+}
+
+.bomb-face--left  { transform: rotateY(-90deg) translateZ(225px); } /* W/2 = 225 */
+.bomb-face--right { transform: rotateY( 90deg) translateZ(225px); }
+
+/* Top & bottom: W × D = 450 × 52, centred in parent */
+.bomb-face--top,
+.bomb-face--bottom {
+  width: 450px;
+  height: 52px;
+  top: 124px; /* (300 - 52) / 2 */
+  left: 0;
+  background-size: cover;
+  background-position: center;
+}
+
+.bomb-face--top    { transform: rotateX(-90deg) translateZ(150px); } /* H/2 = 150 */
+.bomb-face--bottom { transform: rotateX( 90deg) translateZ(150px); }
+
+/* ── Front panel ── */
+.bomb-panel {
+  width: 100%;
+  height: 100%;
+  background-size: cover;
+  background-position: center;
+  border-radius: 4px;
+  padding: 12px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bomb-panel__title {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: bold;
+  color: #fff;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+}
+
+.bomb-panel__body {
+  flex: 1;
+  display: flex;
+  gap: 10px;
+  min-height: 0;
+}
+
+/* Left column: timer + model label */
+.bomb-panel__left {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 0 0 182px;
+}
+
+/* Right column: wires + buttons */
+.bomb-panel__right {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* ── Timer frame ── */
+.bomb-timer-frame {
+  flex: 1;
+  background: #0E0A04;
+  background-size: cover;
+  background-blend-mode: multiply;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 2px 8px rgba(0,0,0,0.8);
+  border: 2px solid #1a0f05;
+}
+
+.bomb-timer-digits {
+  font-family: var(--font-mono);
+  font-size: 52px;
+  font-weight: bold;
+  color: #FF4433;
+  letter-spacing: 4px;
+  text-shadow: 0 0 20px rgba(255, 68, 51, 0.7), 0 0 40px rgba(255, 68, 51, 0.3);
+  font-variant-numeric: tabular-nums;
+}
+
+.bomb-timer-digits--urgent {
+  animation: blink 0.5s step-start infinite;
+}
+
+/* ── Model label ── */
+.bomb-model-section {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bomb-model-label-text {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: rgba(255,255,255,0.85);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+  letter-spacing: 1px;
+}
+
+.bomb-model-tape {
+  background-size: cover;
+  background-position: center;
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: bold;
+  color: #2a1a0a;
+  padding: 4px 10px;
+  border-radius: 2px;
+  letter-spacing: 1px;
+  text-align: center;
+}
+
+/* ── Wire box ── */
+.bomb-wire-box {
+  flex: 1;
+  background-size: cover;
+  background-position: center;
+  border-radius: 4px;
+  padding: 6px 8px 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: relative;
+  box-shadow: inset 0 1px 4px rgba(0,0,0,0.3);
+  cursor: default;
+}
+
+.bomb-wire-row {
+  flex: 1;
+  cursor: crosshair;
+  transition: opacity 0.35s ease;
+  border-radius: 2px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+}
+
+.bomb-wire-row img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+}
+
+.bomb-wire-row--cut {
+  opacity: 0.22;
+  cursor: default;
+}
+
+.bomb-wire-row:not(.bomb-wire-row--cut):hover {
+  opacity: 0.85;
+}
+
+/* ── Button / symbol box ── */
+.bomb-button-box {
+  flex-shrink: 0;
+  background-size: cover;
+  background-position: center;
+  border-radius: 4px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+  box-shadow: inset 0 1px 4px rgba(0,0,0,0.2);
+  cursor: default;
+}
+
+.bomb-sym-btn {
+  flex: 1;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.1s;
+}
+
+.bomb-sym-btn:active {
+  transform: scale(0.92);
+}
+
+.bomb-sym-btn img {
+  width: 100%;
+  max-height: 56px;
+  object-fit: contain;
+  display: block;
+  pointer-events: none;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.2));
+}
+
+/* ── LED dot ── */
+.bomb-led {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #33FF44;
+  box-shadow: 0 0 8px #33FF44, 0 0 16px rgba(51, 255, 68, 0.5);
+  flex-shrink: 0;
+  align-self: flex-end;
+  margin-left: auto;
+}
+
+.bomb-wire-box .bomb-led {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+}
+
+/* ── Hint text under bomb ── */
+.bomb-scene__hint {
+  margin-top: 14px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  pointer-events: none;
+}
