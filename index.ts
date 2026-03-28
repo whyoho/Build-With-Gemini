@@ -48,6 +48,7 @@ interface Room {
   timer?: ReturnType<typeof setInterval>;
   chatHistory: Array<{ role: string; parts: Array<{ text: string }> }>;
   geminiLiveWs?: WebSocket;
+  geminiReady: boolean;
 }
 
 // ── Game logic ───────────────────────────────────────────────────────────────
@@ -202,6 +203,11 @@ Rules:
   ws.onmessage = (event) => {
     try {
       const msg = JSON.parse(event.data as string);
+      if (msg.setupComplete) {
+        room.geminiReady = true;
+        console.log(`[Room ${room.id}] Gemini Live setup complete`);
+        broadcastAll(room, { type: "gemini-ready" });
+      }
       if (msg.serverContent?.modelTurn?.parts?.[0]?.text) {
         const text = msg.serverContent.modelTurn.parts[0].text;
         console.log(`[Room ${room.id}] Gemini: ${text}`);
@@ -219,6 +225,18 @@ Rules:
   };
 
   room.geminiLiveWs = ws;
+}
+
+function cleanupRoomPartial(room: Room) {
+  if (room.timer) {
+    clearInterval(room.timer);
+    room.timer = undefined;
+  }
+  if (room.geminiLiveWs) {
+    room.geminiLiveWs.close();
+    room.geminiLiveWs = undefined;
+  }
+  room.phase = "waiting";
 }
 
 function syncRoom(room: Room) {
@@ -244,7 +262,9 @@ const server = Bun.serve<WSData>({
   },
 
   websocket: {
-    open(ws) {},
+    open(ws) {
+      ws.send(JSON.stringify({ type: "welcome", sessionId: ws.data.sessionId }));
+    },
 
     async message(ws, raw) {
       let msg: Record<string, any>;
@@ -258,7 +278,39 @@ const server = Bun.serve<WSData>({
 
       switch (msg.type) {
         // ── Room management ──────────────────────────────────────────────────
+        case "leave-room": {
+          if (!ws.data.roomId) return;
+          const room = rooms.get(ws.data.roomId);
+          if (!room) return;
+
+          room.players.delete(sessionId);
+          ws.data.roomId = null;
+
+          cleanupRoomPartial(room);
+
+          if (room.players.size === 0) {
+            rooms.delete(room.id);
+          } else {
+            broadcast(room, { type: "player-disconnected" }, sessionId);
+            syncRoom(room);
+          }
+          break;
+        }
+
         case "create-room": {
+          if (ws.data.roomId) {
+            const oldRoom = rooms.get(ws.data.roomId);
+            if (oldRoom) {
+              oldRoom.players.delete(sessionId);
+              cleanupRoomPartial(oldRoom);
+              if (oldRoom.players.size === 0) {
+                rooms.delete(oldRoom.id);
+              } else {
+                broadcast(oldRoom, { type: "player-disconnected" }, "");
+                syncRoom(oldRoom);
+              }
+            }
+          }
           const id = generateRoomId();
           const { bomb, solution, instructions } = createGame();
           const room: Room = {
@@ -270,6 +322,7 @@ const server = Bun.serve<WSData>({
             instructions,
             currentStepIndex: 0,
             chatHistory: [],
+            geminiReady: false,
           };
           room.players.set(sessionId, { ws, role: null, sessionId });
           rooms.set(id, room);
@@ -279,6 +332,19 @@ const server = Bun.serve<WSData>({
         }
 
         case "join-room": {
+          if (ws.data.roomId) {
+            const oldRoom = rooms.get(ws.data.roomId);
+            if (oldRoom) {
+              oldRoom.players.delete(sessionId);
+              cleanupRoomPartial(oldRoom);
+              if (oldRoom.players.size === 0) {
+                rooms.delete(oldRoom.id);
+              } else {
+                broadcast(oldRoom, { type: "player-disconnected" }, "");
+                syncRoom(oldRoom);
+              }
+            }
+          }
           const room = rooms.get(msg.roomId);
           if (!room) {
             ws.send(JSON.stringify({ type: "error", message: "Room not found" }));
@@ -299,7 +365,7 @@ const server = Bun.serve<WSData>({
         // ── Role selection ───────────────────────────────────────────────────
         case "select-role": {
           const room = rooms.get(ws.data.roomId!);
-          if (!room) return;
+          if (!room || room.phase === "playing" || room.phase === "failed") return;
 
           const player = room.players.get(sessionId);
           if (!player) return;
@@ -335,11 +401,13 @@ const server = Bun.serve<WSData>({
                 })
               );
             }
+            if (room.timer) clearInterval(room.timer);
             room.timer = setInterval(() => {
               room.bomb.timeLeft--;
               broadcastAll(room, { type: "tick", timeLeft: room.bomb.timeLeft });
               if (room.bomb.timeLeft <= 0) {
                 clearInterval(room.timer);
+                room.timer = undefined;
                 room.phase = "failed";
                 broadcastAll(room, { type: "game-over", won: false });
               }
@@ -359,7 +427,7 @@ const server = Bun.serve<WSData>({
           const expected = room.solution.sequence[room.currentStepIndex];
           if (!expected || expected.type !== "wire" || expected.id !== msg.wireId) {
             console.log(`[Room ${room.id}] Wrong wire or sequence! Expected: ${JSON.stringify(expected)}, Got: wire ${msg.wireId}`);
-            clearInterval(room.timer);
+            if (room.timer) { clearInterval(room.timer); room.timer = undefined; }
             room.phase = "failed";
             broadcastAll(room, { type: "game-over", won: false });
             return;
@@ -391,7 +459,7 @@ const server = Bun.serve<WSData>({
             // Turning ON
             if (!expected || expected.type !== "symbol" || expected.id !== msg.symbolId) {
               console.log(`[Room ${room.id}] Wrong symbol or sequence! Expected: ${JSON.stringify(expected)}, Got: symbol ${msg.symbolId}`);
-              clearInterval(room.timer);
+              if (room.timer) { clearInterval(room.timer); room.timer = undefined; }
               room.phase = "failed";
               broadcastAll(room, { type: "game-over", won: false });
               return;
@@ -401,7 +469,7 @@ const server = Bun.serve<WSData>({
           } else {
             // Turning OFF is always an error per user rules
             console.log(`[Room ${room.id}] Symbol deactivated! BOOM.`);
-            clearInterval(room.timer);
+            if (room.timer) { clearInterval(room.timer); room.timer = undefined; }
             room.phase = "failed";
             broadcastAll(room, { type: "game-over", won: false });
             return;
@@ -421,33 +489,39 @@ const server = Bun.serve<WSData>({
           break;
         }
 
-        // ── Chat (deaf → Gemini → mute) ──────────────────────────────────────
-        case "chat": {
+        // ── Gameplay ─────────────────────────────────────────────────────────
+        case "chat-message": {
           const room = rooms.get(ws.data.roomId!);
-          if (!room || room.phase !== "playing") return;
+          if (!room || room.phase !== "playing" || !room.geminiReady) return;
 
-          ws.send(JSON.stringify({ type: "chat-message", from: "deaf", content: msg.content }));
-          
-          if (room.geminiLiveWs && room.geminiLiveWs.readyState === WebSocket.OPEN) {
-            room.geminiLiveWs.send(JSON.stringify({
-              client_content: {
-                turns: [{ role: "user", parts: [{ text: msg.content }] }],
-                turn_complete: true
-              }
-            }));
-          } else {
-            broadcastAll(room, { type: "agent-typing", typing: true });
-            const response = await handleGeminiChat(room, msg.content);
-            broadcastAll(room, { type: "agent-typing", typing: false });
-            broadcastAll(room, { type: "chat-message", from: "agent", content: response });
+          const player = room.players.get(sessionId);
+          if (!player) return;
+
+          if (msg.content) {
+            ws.send(JSON.stringify({ type: "chat-message", from: "deaf", content: msg.content }));
+            
+            if (room.geminiLiveWs && room.geminiLiveWs.readyState === WebSocket.OPEN) {
+              room.geminiLiveWs.send(JSON.stringify({
+                client_content: {
+                  turns: [{ role: "user", parts: [{ text: msg.content }] }],
+                  turn_complete: true
+                }
+              }));
+            } else {
+              broadcastAll(room, { type: "agent-typing", typing: true });
+              const response = await handleGeminiChat(room, msg.content);
+              broadcastAll(room, { type: "agent-typing", typing: false });
+              broadcastAll(room, { type: "chat-message", from: "agent", content: response });
+            }
+            break;
           }
-          break;
         }
 
         case "webcam-frame": {
           const room = rooms.get(ws.data.roomId!);
-          if (!room || room.phase !== "playing") return;
+          if (!room || room.phase !== "playing" || !room.geminiReady) return;
           broadcast(room, { type: "webcam-frame", frame: msg.frame }, sessionId);
+
           if (room.geminiLiveWs && room.geminiLiveWs.readyState === WebSocket.OPEN) {
             room.geminiLiveWs.send(JSON.stringify({
               realtime_input: {
@@ -469,12 +543,12 @@ const server = Bun.serve<WSData>({
       const room = rooms.get(roomId);
       if (!room) return;
       room.players.delete(sessionId);
+      cleanupRoomPartial(room);
       if (room.players.size === 0) {
-        clearInterval(room.timer);
-        room.geminiLiveWs?.close();
         rooms.delete(roomId);
       } else {
         broadcast(room, { type: "player-disconnected" }, "");
+        syncRoom(room);
       }
     },
   },
@@ -483,3 +557,5 @@ const server = Bun.serve<WSData>({
 });
 
 console.log(`Server running at http://localhost:${server.port}`);
+
+export { server, rooms, type Room };

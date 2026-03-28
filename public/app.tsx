@@ -141,8 +141,8 @@ function WebcamDisplay({ frame }: { frame: string | null }) {
   );
 }
 
-// ── Bomb view (mute player) ───────────────────────────────────────────────────
-function BombView({
+// ── Bomb UI (mute player) ───────────────────────────────────────────────────
+function BombUI({
   bomb,
   onCutWire,
   onToggleSymbol,
@@ -154,48 +154,61 @@ function BombView({
   return (
     <div className="bomb">
       <div className="bomb__header">
-        <div className="bomb__led" />
+        <div className="bomb__led bomb__led--blinking" />
         <span>EXPLOSIVE DEVICE — HANDLE WITH CARE</span>
-        <div className="bomb__led" />
+        <div className="bomb__led bomb__led--blinking" />
       </div>
 
-      <div className="bomb__section">
-        <h3 className="bomb__section-title">WIRES — click to cut</h3>
-        <div className="bomb__wires">
-          {bomb.wires.map((wire) => (
-            <button
-              key={wire.id}
-              className={`wire wire--${wire.color} ${wire.cut ? "wire--cut" : ""}`}
-              onClick={() => !wire.cut && onCutWire(wire.id)}
-              disabled={wire.cut}
-            >
-              <span className="wire__dot" />
-              <div className="wire__track">
-                <div className="wire__line" />
-                {wire.cut && <div className="wire__snip">✂</div>}
-              </div>
-              <span className="wire__label">{wire.color}</span>
-            </button>
-          ))}
+      <div className="bomb__panel">
+        <div className="bomb__section bomb__section--wires">
+          <div className="bomb__section-header">
+            <h3 className="bomb__section-title">DETONATOR WIRES</h3>
+            <span className="bomb__section-hint">click to sever</span>
+          </div>
+          <div className="bomb__wires">
+            {bomb.wires.map((wire) => (
+              <button
+                key={wire.id}
+                className={`wire wire--${wire.color} ${wire.cut ? "wire--cut" : ""}`}
+                onClick={() => !wire.cut && onCutWire(wire.id)}
+                disabled={wire.cut}
+              >
+                <div className="wire__connector wire__connector--left" />
+                <div className="wire__track">
+                  <div className="wire__line" />
+                  {wire.cut && (
+                    <div className="wire__snip">
+                      <span className="spark">⚡</span>
+                    </div>
+                  )}
+                </div>
+                <div className="wire__connector wire__connector--right" />
+                <span className="wire__label">{wire.color}</span>
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
 
-      <div className="bomb__section">
-        <h3 className="bomb__section-title">SYMBOLS — click to toggle</h3>
-        <div className="bomb__symbols">
-          {bomb.symbols.map((sym) => (
-            <button
-              key={sym.id}
-              className={`symbol-btn ${sym.active ? "symbol-btn--active" : ""}`}
-              onClick={() => onToggleSymbol(sym.id)}
-            >
-              <span className="symbol-btn__icon">{sym.icon}</span>
-              <span className="symbol-btn__name">{sym.name}</span>
-              <span className={`symbol-btn__state ${sym.active ? "on" : "off"}`}>
-                {sym.active ? "ON" : "OFF"}
-              </span>
-            </button>
-          ))}
+        <div className="bomb__section bomb__section--symbols">
+          <div className="bomb__section-header">
+            <h3 className="bomb__section-title">CRYPTOGRAPHIC SYMBOLS</h3>
+            <span className="bomb__section-hint">click to toggle</span>
+          </div>
+          <div className="bomb__symbols">
+            {bomb.symbols.map((sym) => (
+              <button
+                key={sym.id}
+                className={`symbol-btn ${sym.active ? "symbol-btn--active" : ""}`}
+                onClick={() => onToggleSymbol(sym.id)}
+              >
+                <div className="symbol-btn__inner">
+                  <span className="symbol-btn__icon">{sym.icon}</span>
+                  <span className="symbol-btn__name">{sym.name}</span>
+                </div>
+                <div className={`symbol-btn__indicator ${sym.active ? "on" : "off"}`} />
+              </button>
+            ))}
+          </div>
         </div>
       </div>
     </div>
@@ -229,11 +242,13 @@ function Chat({
   onSend,
   role,
   agentTyping,
+  agentReady,
 }: {
   messages: ChatMessage[];
   onSend: (msg: string) => void;
   role: Role;
   agentTyping: boolean;
+  agentReady: boolean;
 }) {
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -243,6 +258,7 @@ function Chat({
   }, [messages, agentTyping]);
 
   const submit = () => {
+    if (!agentReady) return;
     const t = input.trim();
     if (t) {
       onSend(t);
@@ -253,8 +269,8 @@ function Chat({
   return (
     <div className="chat">
       <div className="chat__header">
-        <span className="chat__led" />
-        <span>BLIND AGENT — SECURE CHANNEL</span>
+        <span className={`chat__led ${agentReady ? "chat__led--ready" : ""}`} />
+        <span>BLIND AGENT — {agentReady ? "SECURE CHANNEL" : "INITIALIZING..."}</span>
       </div>
 
       <div className="chat__feed">
@@ -282,23 +298,17 @@ function Chat({
         <div ref={bottomRef} />
       </div>
 
-      {role === "deaf" && (
-        <div className="chat__input-row">
-          <input
-            className="chat__input"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && submit()}
-            placeholder="Tell the Agent what the instructions say…"
-          />
-          <button className="chat__send" onClick={submit}>
-            SEND
-          </button>
-        </div>
-      )}
-      {role === "mute" && (
-        <div className="chat__muted-notice">🔇 You are mute — you cannot send messages</div>
-      )}
+      <div className="chat__input-row">
+        <input
+          className="chat__input"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && submit()}
+          placeholder={agentReady ? (role === "deaf" ? "Type instruction to Agent…" : "Read only...") : "Waiting for agent..."}
+          disabled={role !== "deaf" || !agentReady}
+        />
+        {role === "deaf" && <button className="chat__send" onClick={submit} disabled={!agentReady || !input.trim()}>SEND</button>}
+      </div>
     </div>
   );
 }
@@ -309,6 +319,7 @@ function MuteView({
   messages,
   timeLeft,
   agentTyping,
+  agentReady,
   onCutWire,
   onToggleSymbol,
   onWebcamFrame,
@@ -317,6 +328,7 @@ function MuteView({
   messages: ChatMessage[];
   timeLeft: number;
   agentTyping: boolean;
+  agentReady: boolean;
   onCutWire: (id: string) => void;
   onToggleSymbol: (id: string) => void;
   onWebcamFrame: (frame: string) => void;
@@ -335,10 +347,10 @@ function MuteView({
       </header>
       <div className="game-body">
         <div className="game-main">
-          <BombView bomb={bomb} onCutWire={onCutWire} onToggleSymbol={onToggleSymbol} />
-          <WebcamCapture onFrame={onWebcamFrame} />
+          <BombUI bomb={bomb} onCutWire={onCutWire} onToggleSymbol={onToggleSymbol} />
+          <WebcamCapture onFrame={(frame) => { if (agentReady) onWebcamFrame(frame); }} />
         </div>
-        <Chat messages={messages} onSend={() => {}} role="mute" agentTyping={agentTyping} />
+        <Chat messages={messages} onSend={() => {}} role="mute" agentTyping={agentTyping} agentReady={agentReady} />
       </div>
     </div>
   );
@@ -350,6 +362,7 @@ function DeafView({
   messages,
   timeLeft,
   agentTyping,
+  agentReady,
   onSend,
   partnerFrame,
 }: {
@@ -357,6 +370,7 @@ function DeafView({
   messages: ChatMessage[];
   timeLeft: number;
   agentTyping: boolean;
+  agentReady: boolean;
   onSend: (msg: string) => void;
   partnerFrame: string | null;
 }) {
@@ -377,7 +391,7 @@ function DeafView({
           <InstructionCards instructions={instructions} />
           <WebcamDisplay frame={partnerFrame} />
         </div>
-        <Chat messages={messages} onSend={onSend} role="deaf" agentTyping={agentTyping} />
+        <Chat messages={messages} onSend={onSend} role="deaf" agentTyping={agentTyping} agentReady={agentReady} />
       </div>
     </div>
   );
@@ -609,14 +623,17 @@ function App() {
   const [mySessionId, setMySessionId] = useState<string>("");
   const [partnerJoined, setPartnerJoined] = useState(false);
   const [partnerRole, setPartnerRole] = useState<Role | null>(null);
-  const [bomb, setBomb] = useState<Bomb | null>(null);
+  const [bomb, setBomb] = useState<any>(null);
   const [timeLeft, setTimeLeft] = useState(180);
   const [instructions, setInstructions] = useState<string[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [agentTyping, setAgentTyping] = useState(false);
+  const [agentReady, setAgentReady] = useState(false);
   const [gameWon, setGameWon] = useState(false);
   const [error, setError] = useState("");
   const [partnerFrame, setPartnerFrame] = useState<string | null>(null);
+
+  const socketRef = useRef<WebSocket | null>(null);
 
   const addMsg = (from: ChatMessage["from"], content: string) =>
     setMessages((prev) => [...prev, { id: crypto.randomUUID(), from, content }]);
@@ -670,30 +687,9 @@ function App() {
       case "tick":
         setTimeLeft(msg.timeLeft);
         break;
-      case "wire-cut":
-        setBomb((prev) =>
-          prev
-            ? { ...prev, wires: prev.wires.map((w) => (w.id === msg.wireId ? { ...w, cut: true } : w)) }
-            : null
-        );
-        break;
-      case "symbol-toggled":
-        setBomb((prev) =>
-          prev
-            ? {
-                ...prev,
-                symbols: prev.symbols.map((s) =>
-                  s.id === msg.symbolId ? { ...s, active: msg.active } : s
-                ),
-              }
-            : null
-        );
-        break;
-      case "chat-message":
-        addMsg(msg.from, msg.content);
-        break;
-      case "agent-typing":
-        setAgentTyping(msg.typing);
+      case "gemini-ready":
+        setAgentReady(true);
+        addMsg("system", "Blind Agent is ready. You may now communicate and send video.");
         break;
       case "game-over":
         setGameWon(msg.won);
@@ -712,6 +708,9 @@ function App() {
   });
 
   const reset = () => {
+    if (roomId) {
+      send({ type: "leave-room" });
+    }
     setPhase("home");
     setRoomId("");
     setMyRole(null);
@@ -722,8 +721,21 @@ function App() {
     setInstructions([]);
     setMessages([]);
     setAgentTyping(false);
+    setAgentReady(false);
     setPartnerFrame(null);
   };
+
+  useEffect(() => {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${proto}//${window.location.host}/ws`);
+    ws.onmessage = (e) => {
+      try {
+        onMsgRef.current(JSON.parse(e.data));
+      } catch {}
+    };
+    wsRef.current = ws;
+    return () => ws.close();
+  }, []);
 
   return (
     <div className="app">
@@ -755,9 +767,14 @@ function App() {
           messages={messages}
           timeLeft={timeLeft}
           agentTyping={agentTyping}
+          agentReady={agentReady}
           onCutWire={(id) => send({ type: "cut-wire", wireId: id })}
           onToggleSymbol={(id) => send({ type: "toggle-symbol", symbolId: id })}
-          onWebcamFrame={(frame) => send({ type: "webcam-frame", frame })}
+          onWebcamFrame={(frame) => {
+            if (agentReady) {
+              send({ type: "webcam-frame", frame });
+            }
+          }}
         />
       )}
 
@@ -767,7 +784,12 @@ function App() {
           messages={messages}
           timeLeft={timeLeft}
           agentTyping={agentTyping}
-          onSend={(content) => send({ type: "chat", content })}
+          agentReady={agentReady}
+          onSend={(content) => {
+            if (agentReady) {
+              send({ type: "chat", content });
+            }
+          }}
           partnerFrame={partnerFrame}
         />
       )}

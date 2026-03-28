@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "type": "command",
+        "command": "bash .github/scripts/restart-bun.sh",
+        "timeout": 10
+      }
+    ]
+  }
+}

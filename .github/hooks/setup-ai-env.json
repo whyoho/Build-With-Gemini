@@ -1,0 +1,7 @@
+{
+  "onPreToolUse": {
+    "execute": {
+      "command": "bash .github/hooks/setup-ai-env.sh"
+    }
+  }
+}
