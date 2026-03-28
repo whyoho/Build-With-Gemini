@@ -47,6 +47,7 @@ interface Room {
   instructions: string[];
   timer?: ReturnType<typeof setInterval>;
   chatHistory: Array<{ role: string; parts: Array<{ text: string }> }>;
+  geminiLiveWs?: WebSocket;
 }
 
 // ── Game logic ───────────────────────────────────────────────────────────────
@@ -160,6 +161,56 @@ Rules:
   }
 }
 
+async function initGeminiLive(room: Room) {
+  if (!GEMINI_API_KEY) return;
+
+  const url = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BiDiSession?key=${GEMINI_API_KEY}`;
+  const ws = new WebSocket(url);
+
+  ws.onopen = () => {
+    console.log(`[Room ${room.id}] Gemini Live session opened`);
+    const setup = {
+      setup: {
+        model: "models/gemini-2.0-flash-exp",
+        generation_config: { response_modalities: ["text"] },
+        system_instruction: {
+          parts: [{ text: `You are the Blind Agent in a tense bomb defusal game. You cannot see the bomb, but you can see the Mute player via their webcam.
+
+You mediate between two players:
+- DEAF player: has the instruction manual, types to you, cannot hear
+- MUTE player: can see the bomb and act on it, cannot speak. You see their face/motions via webcam.
+
+Your job: receive the DEAF player's instructions and relay them as urgent, precise commands to the MUTE player.
+
+Rules:
+- Keep responses to 1-2 short sentences MAX
+- Be URGENT — there's a live bomb
+- Use clear format: "Cut the [COLOR] wire" or "Toggle the [SYMBOL] symbol ON/OFF"
+- Never ask questions, just relay the instruction clearly` }]
+        }
+      }
+    };
+    ws.send(JSON.stringify(setup));
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data as string);
+      if (msg.serverContent?.modelTurn?.parts?.[0]?.text) {
+        const text = msg.serverContent.modelTurn.parts[0].text;
+        broadcastAll(room, { type: "chat-message", from: "agent", content: text });
+      }
+    } catch (err) {
+      console.error("Gemini Live message error:", err);
+    }
+  };
+
+  ws.onerror = (err) => console.error(`[Room ${room.id}] Gemini Live error:`, err);
+  ws.onclose = () => console.log(`[Room ${room.id}] Gemini Live session closed`);
+
+  room.geminiLiveWs = ws;
+}
+
 // ── Server ───────────────────────────────────────────────────────────────────
 const server = Bun.serve<WSData>({
   routes: {
@@ -249,6 +300,7 @@ const server = Bun.serve<WSData>({
 
           if (allReady) {
             room.phase = "playing";
+            initGeminiLive(room); // Initialize Live API session
             for (const p of room.players.values()) {
               p.ws.send(
                 JSON.stringify({
@@ -312,10 +364,41 @@ const server = Bun.serve<WSData>({
           const room = rooms.get(ws.data.roomId!);
           if (!room || room.phase !== "playing") return;
           broadcastAll(room, { type: "chat-message", from: "deaf", content: msg.content });
-          broadcastAll(room, { type: "agent-typing", typing: true });
-          const response = await handleGeminiChat(room, msg.content);
-          broadcastAll(room, { type: "agent-typing", typing: false });
-          broadcastAll(room, { type: "chat-message", from: "agent", content: response });
+          
+          if (room.geminiLiveWs && room.geminiLiveWs.readyState === WebSocket.OPEN) {
+            room.geminiLiveWs.send(JSON.stringify({
+              client_content: {
+                turns: [{ role: "user", parts: [{ text: msg.content }] }],
+                turn_complete: true
+              }
+            }));
+          } else {
+            broadcastAll(room, { type: "agent-typing", typing: true });
+            const response = await handleGeminiChat(room, msg.content);
+            broadcastAll(room, { type: "agent-typing", typing: false });
+            broadcastAll(room, { type: "chat-message", from: "agent", content: response });
+          }
+          break;
+        }
+
+        case "webcam-frame": {
+          const room = rooms.get(ws.data.roomId!);
+          if (!room || room.phase !== "playing") return;
+
+          // Broadcast to the other player (Deaf player) so they can see the webcam
+          broadcast(room, { type: "webcam-frame", frame: msg.frame }, sessionId);
+
+          // Forward to Gemini Live API
+          if (room.geminiLiveWs && room.geminiLiveWs.readyState === WebSocket.OPEN) {
+            room.geminiLiveWs.send(JSON.stringify({
+              realtime_input: {
+                media_chunks: [{
+                  data: msg.frame, // Base64 JPEG
+                  mime_type: "image/jpeg"
+                }]
+              }
+            }));
+          }
           break;
         }
       }
@@ -329,6 +412,7 @@ const server = Bun.serve<WSData>({
       room.players.delete(sessionId);
       if (room.players.size === 0) {
         clearInterval(room.timer);
+        room.geminiLiveWs?.close();
         rooms.delete(roomId);
       } else {
         broadcast(room, { type: "player-disconnected" }, "");

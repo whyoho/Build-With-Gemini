@@ -432,6 +432,14 @@ body {
   overflow: hidden;
 }
 
+.game-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+}
+
 /* ── Role Badge ─────────────────────────────────────────────────────────────── */
 .role-badge {
   display: flex;
@@ -500,7 +508,6 @@ body {
   flex-direction: column;
   gap: 32px;
   padding: 32px;
-  border-right: 1px solid var(--border);
   overflow-y: auto;
   background: var(--bg);
 }
@@ -710,7 +717,6 @@ body {
   flex-direction: column;
   gap: 16px;
   padding: 32px;
-  border-right: 1px solid var(--border);
   overflow-y: auto;
   background: var(--bg);
 }
@@ -1001,4 +1007,105 @@ body {
   .bomb { border-right: none; border-bottom: 1px solid var(--border); }
   .instructions { border-right: none; border-bottom: 1px solid var(--border); }
   .bomb__symbols { grid-template-columns: repeat(4, 1fr); }
+}
+/* ── Webcam ─────────────────────────────────────────────────────────────────── */
+.webcam-box {
+  background: #000;
+  border-top: 1px solid var(--border-bright);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 240px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.webcam-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.7;
+  filter: grayscale(0.2) contrast(1.1) brightness(0.9);
+}
+
+.webcam-box__label {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 3px 10px;
+  font-size: 9px;
+  letter-spacing: 2px;
+  color: var(--blue);
+  border: 1px solid var(--blue);
+  z-index: 10;
+  text-transform: uppercase;
+  border-radius: 2px;
+}
+
+.webcam-box__status {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: var(--red);
+  text-shadow: 0 0 10px var(--red-glow);
+  z-index: 10;
+  text-transform: uppercase;
+}
+
+.webcam-box--capture .webcam-box__label {
+  color: var(--orange);
+  border-color: var(--orange);
+}
+
+.webcam-placeholder {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-dim);
+  background: repeating-linear-gradient(
+    45deg,
+    #05050a,
+    #05050a 10px,
+    #0a0a14 10px,
+    #0a0a14 20px
+  );
+}
+
+.webcam-placeholder__icon {
+  font-size: 32px;
+  opacity: 0.3;
+}
+
+.webcam-placeholder__text {
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  opacity: 0.5;
+}
+
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+
+.webcam-box::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    transparent 50%,
+    rgba(0, 0, 0, 0.1) 51%,
+    transparent 51%
+  );
+  background-size: 100% 4px;
+  pointer-events: none;
+  opacity: 0.4;
+  z-index: 5;
 }

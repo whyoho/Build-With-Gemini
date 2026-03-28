@@ -73,6 +73,74 @@ function Timer({ timeLeft }: { timeLeft: number }) {
   );
 }
 
+// ── Webcam Capture (Mute player) ─────────────────────────────────────────────
+function WebcamCapture({ onFrame }: { onFrame: (base64: string) => void }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    let stream: MediaStream | null = null;
+    let interval: ReturnType<typeof setInterval>;
+
+    async function setup() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 320, height: 240, frameRate: 5 },
+        });
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+        }
+
+        interval = setInterval(() => {
+          if (videoRef.current && canvasRef.current) {
+            const ctx = canvasRef.current.getContext("2d");
+            if (ctx) {
+              ctx.drawImage(videoRef.current, 0, 0, 320, 240);
+              const base64 = canvasRef.current.toDataURL("image/jpeg", 0.5);
+              onFrame(base64.split(",")[1]); // Strip prefix
+            }
+          }
+        }, 1000); // 1 FPS for Gemini
+      } catch (err) {
+        console.error("Webcam error:", err);
+      }
+    }
+
+    setup();
+    return () => {
+      stream?.getTracks().forEach((t) => t.stop());
+      clearInterval(interval);
+    };
+  }, [onFrame]);
+
+  return (
+    <div className="webcam-box webcam-box--capture">
+      <div className="webcam-box__label">LIVE TRANSMISSION</div>
+      <video ref={videoRef} autoPlay playsInline muted className="webcam-video" />
+      <canvas ref={canvasRef} width={320} height={240} style={{ display: "none" }} />
+      <div className="webcam-box__status">● STREAMING</div>
+    </div>
+  );
+}
+
+// ── Webcam Display (Deaf player) ─────────────────────────────────────────────
+function WebcamDisplay({ frame }: { frame: string | null }) {
+  return (
+    <div className="webcam-box webcam-box--display">
+      <div className="webcam-box__label">PARTNER FEED — ENCRYPTED</div>
+      {frame ? (
+        <img src={`data:image/jpeg;base64,${frame}`} className="webcam-video" alt="Partner webcam" />
+      ) : (
+        <div className="webcam-placeholder">
+          <div className="webcam-placeholder__icon">📷</div>
+          <div className="webcam-placeholder__text">Waiting for signal…</div>
+        </div>
+      )}
+      <div className="webcam-box__status">● {frame ? "RECEIVING" : "NO SIGNAL"}</div>
+    </div>
+  );
+}
+
 // ── Bomb view (mute player) ───────────────────────────────────────────────────
 function BombView({
   bomb,
@@ -243,6 +311,7 @@ function MuteView({
   agentTyping,
   onCutWire,
   onToggleSymbol,
+  onWebcamFrame,
 }: {
   bomb: Bomb;
   messages: ChatMessage[];
@@ -250,6 +319,7 @@ function MuteView({
   agentTyping: boolean;
   onCutWire: (id: string) => void;
   onToggleSymbol: (id: string) => void;
+  onWebcamFrame: (frame: string) => void;
 }) {
   return (
     <div className="game-view">
@@ -264,7 +334,10 @@ function MuteView({
         <Timer timeLeft={timeLeft} />
       </header>
       <div className="game-body">
-        <BombView bomb={bomb} onCutWire={onCutWire} onToggleSymbol={onToggleSymbol} />
+        <div className="game-main">
+          <BombView bomb={bomb} onCutWire={onCutWire} onToggleSymbol={onToggleSymbol} />
+          <WebcamCapture onFrame={onWebcamFrame} />
+        </div>
         <Chat messages={messages} onSend={() => {}} role="mute" agentTyping={agentTyping} />
       </div>
     </div>
@@ -278,12 +351,14 @@ function DeafView({
   timeLeft,
   agentTyping,
   onSend,
+  partnerFrame,
 }: {
   instructions: string[];
   messages: ChatMessage[];
   timeLeft: number;
   agentTyping: boolean;
   onSend: (msg: string) => void;
+  partnerFrame: string | null;
 }) {
   return (
     <div className="game-view">
@@ -298,7 +373,10 @@ function DeafView({
         <Timer timeLeft={timeLeft} />
       </header>
       <div className="game-body">
-        <InstructionCards instructions={instructions} />
+        <div className="game-main">
+          <InstructionCards instructions={instructions} />
+          <WebcamDisplay frame={partnerFrame} />
+        </div>
         <Chat messages={messages} onSend={onSend} role="deaf" agentTyping={agentTyping} />
       </div>
     </div>
@@ -532,6 +610,7 @@ function App() {
   const [agentTyping, setAgentTyping] = useState(false);
   const [gameWon, setGameWon] = useState(false);
   const [error, setError] = useState("");
+  const [partnerFrame, setPartnerFrame] = useState<string | null>(null);
 
   const addMsg = (from: ChatMessage["from"], content: string) =>
     setMessages((prev) => [...prev, { id: crypto.randomUUID(), from, content }]);
@@ -602,6 +681,9 @@ function App() {
         setGameWon(msg.won);
         setPhase("game-over");
         break;
+      case "webcam-frame":
+        setPartnerFrame(msg.frame);
+        break;
       case "player-disconnected":
         addMsg("system", "⚠ Your partner disconnected.");
         break;
@@ -622,6 +704,7 @@ function App() {
     setInstructions([]);
     setMessages([]);
     setAgentTyping(false);
+    setPartnerFrame(null);
   };
 
   return (
@@ -656,6 +739,7 @@ function App() {
           agentTyping={agentTyping}
           onCutWire={(id) => send({ type: "cut-wire", wireId: id })}
           onToggleSymbol={(id) => send({ type: "toggle-symbol", symbolId: id })}
+          onWebcamFrame={(frame) => send({ type: "webcam-frame", frame })}
         />
       )}
 
@@ -666,6 +750,7 @@ function App() {
           timeLeft={timeLeft}
           agentTyping={agentTyping}
           onSend={(content) => send({ type: "chat", content })}
+          partnerFrame={partnerFrame}
         />
       )}
 
